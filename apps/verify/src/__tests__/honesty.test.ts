@@ -21,8 +21,10 @@ describe("honesty", () => {
   it("the key-compromise line follows whether revocation was established", () => {
     const h = honesty({ integrity: true, binding: "pinned", revocation: "not_revoked" });
     expect(h.doesNotProve.join(" ")).toContain(
-      "no revocation memo naming it, at any date, was found",
+      "no revocation memo naming it, at any date, is at the anchor address the relay declares",
     );
+    // N2: the scope is one address, never the whole chain.
+    expect(h.doesNotProve.join(" ")).not.toContain("found on-chain");
     expect(h.doesNotProve.join(" ")).toContain("served the whole chain");
     expect(h.proves[2]).toContain("pinned");
     const n = honesty({ integrity: true, binding: "pinned", revocation: "not_established" });

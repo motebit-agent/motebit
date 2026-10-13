@@ -147,3 +147,37 @@ describe("proofLadder", () => {
     );
   });
 });
+
+describe("canonical form (round 4)", () => {
+  it("the binding rung names each field not in canonical form", () => {
+    const b = rung(proofLadder(v({ noncanonical: ["public_key", "suite"] }), RESOLVED), "binding");
+    expect(b.state).toBe("skipped");
+    expect(b.summary).toContain("signing key (public_key) is not in canonical form");
+    expect(b.summary).toContain("suite not recognized");
+  });
+
+  it("the revocation ✓ states its scope: one address, the one the relay declares (N2)", () => {
+    const r = rung(proofLadder(v({ revocation: "not_revoked" }), RESOLVED), "revocation");
+    expect(r.state).toBe("passed");
+    expect(r.summary).toContain("the anchor address the relay declares");
+    expect(r.summary).toContain("memos anywhere else were not looked for");
+  });
+
+  it("a memo with no displayable date is still reported (N1)", () => {
+    for (const at of [undefined, 1e17]) {
+      const r = rung(
+        proofLadder(
+          v({
+            binding: "revoked",
+            revocation: "revoked",
+            ...(at !== undefined ? { revokedAt: at } : {}),
+          }),
+          RESOLVED,
+        ),
+        "revocation",
+      );
+      expect(r.state).toBe("failed");
+      expect(r.summary).toContain("with no date this page can show");
+    }
+  });
+});

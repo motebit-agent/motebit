@@ -2,7 +2,10 @@
  * Tamper check for the receipt.computer overclaim mitigation (cold review F-1,
  * F-2, F-3; round 2: B served-chain binding, D truthful copy, G unauthenticated
  * revocation; round 3: F1 any memo is reported, F2 canonical ids only, F3 the
- * claimed time is a claim). Each entry reverts ONE fix point and names the tests that must go
+ * claimed time is a claim; round 4: K1 every identity-bearing field in exact
+ * canonical form + the memo scan on the decoded key, N1 an undated memo is a
+ * memo, N2 the ✓'s scope, N3 an undisplayable claimed time is still shown).
+ * Each entry reverts ONE fix point and names the tests that must go
  * red. The script applies the tamper, runs those tests, demands a non-zero exit,
  * and restores the file. An entry whose `find` text is not present exactly once
  * is a hard error — a tamper that silently fails to apply would be a false green.
@@ -203,7 +206,9 @@ const TAMPERS = [
     file: "src/assess.ts",
     find: '    v.revocation === "revoked_after_signing" ||\n',
     replace: "",
-    tests: ["src/__tests__/claimed-vs-proven.test.ts", "-t", "memo dated after the claimed time"],
+    // The page's own decoded-key scan also finds such a memo (round 4), so the
+    // page-level matrix stays green; the unit test pins this fix point alone.
+    tests: ["src/__tests__/assess.test.ts", "-t", "a memo dated AFTER the claimed completed_at"],
   },
   {
     name: "F1: the reported memo's date is again said to be at or before this receipt",
@@ -236,7 +241,8 @@ const TAMPERS = [
     file: "src/served-chain.ts",
     find: '  if (form === "noncanonical") return { kind: "noncanonical_id" };\n',
     replace: "",
-    tests: ["src/__tests__/claimed-vs-proven.test.ts", "-t", "its own chain served → no binding"],
+    // Rule 7 (round 4) also refuses a non-canonical id at the page level.
+    tests: ["src/__tests__/served-chain.test.ts", "-t", "only an exactly canonical id"],
   },
   {
     name: "F2: any non-v8, non-did:key id falls back to the relay-record root",
@@ -269,20 +275,16 @@ const TAMPERS = [
     file: "src/served-chain.ts",
     find: "  if (!isSelfCertifyingId(motebitId)) return false;\n",
     replace: "",
-    tests: [
-      "src/__tests__/claimed-vs-proven.test.ts",
-      "-t",
-      "uppercase UUIDv8 signed by the key it commits to",
-    ],
+    tests: ["src/__tests__/served-chain.test.ts", "-t", "only an exactly canonical id"],
   },
   {
-    name: "F2: the page stops classifying the id, so the copy never says it is non-canonical",
+    name: "F2: the page stops classifying the id, so a did:key commitment is no longer described as encoding the key",
     file: "src/main.ts",
     find: "        idForm: classifyId(receipt.motebit_id),\n",
     replace: "",
-    // With the relay reachable the served-chain outcome still names the reason;
-    // with it down, only the page's own classification can.
-    tests: ["src/__tests__/claimed-vs-proven.test.ts", "-t", "no key commitment"],
+    // Since round 4 the not-canonical copy comes from rule 7's field list;
+    // idForm still decides how a did:key commitment is described.
+    tests: ["src/__tests__/claimed-vs-proven.test.ts", "-t", "says the id encodes the key"],
   },
   {
     name: "F3: the PINNED card drops what it does not prove",
@@ -328,7 +330,7 @@ const TAMPERS = [
   {
     name: "F3: the honesty block says 'dated before signing' after a complete scan",
     file: "src/honesty.ts",
-    find: "only that no revocation memo naming it, at any date, was found on-chain.",
+    find: "only that no revocation memo naming it, at any date, is at the anchor address the relay declares (a complete scan of that one address through an independent RPC); memos anywhere else were not looked for.",
     replace: "only that no revocation memo dated before signing was found on-chain.",
     tests: ["src/__tests__/claimed-vs-proven.test.ts", "-t", "a memo for another key"],
   },
@@ -346,8 +348,8 @@ const TAMPERS = [
   {
     name: "F3: the claim field no longer marks completed_at as the signer's claim",
     file: "src/render.ts",
-    find: 'field("completed (signer\'s claim)"',
-    replace: 'field("completed"',
+    find: "dl.append(field(`${label} (signer's claim)`, value));",
+    replace: "dl.append(field(label, value));",
     tests: ["src/__tests__/claimed-vs-proven.test.ts", "-t", "canonical legacy UUIDv4"],
   },
   {
@@ -356,6 +358,216 @@ const TAMPERS = [
     find: ", whatever its date relative to the receipt's `completed_at`: that time is the signer's own claim, so a memo dated after it clears nothing.",
     replace: ", when it is dated at or before the receipt.",
     tests: ["src/__tests__/page.test.ts", "-t", "llms.txt"],
+  },
+  // ── Round 4 ──
+  {
+    name: "K1/rule 7: a field not in canonical form no longer drops the binding",
+    file: "src/assess.ts",
+    find: '  } else if (noncanonical.length > 0) {\n    shown = "integrity-only";',
+    replace: '  } else if (false) {\n    shown = "integrity-only";',
+    tests: ["src/__tests__/claimed-vs-proven.test.ts", "-t", "suite: an unknown suite →"],
+  },
+  {
+    name: "K1/rule 7: a field not in canonical form may earn a revocation ✓",
+    file: "src/assess.ts",
+    find: "  } else if (noncanonical.length > 0 && v.integrity) {",
+    replace: "  } else if (false) {",
+    tests: ["src/__tests__/claimed-vs-proven.test.ts", "-t", "signature: = padding →"],
+  },
+  {
+    name: "K1: public_key is no longer checked for canonical form",
+    file: "src/canonical.ts",
+    find: '  if (!isCanonicalKeyHex(r["public_key"])) out.push("public_key");\n',
+    replace: "",
+    tests: [
+      "src/__tests__/claimed-vs-proven.test.ts",
+      "-t",
+      "Y1 genesis key with a trailing space, no memo",
+    ],
+  },
+  {
+    name: "K1: the canonical key form accepts upper case",
+    file: "src/canonical.ts",
+    find: "const KEY_HEX = /^[0-9a-f]{64}$/;",
+    replace: "const KEY_HEX = /^[0-9a-f]{64}$/i;",
+    tests: ["src/__tests__/canonical.test.ts", "-t", "public_key"],
+  },
+  {
+    name: "K1: signature is no longer checked for canonical form",
+    file: "src/canonical.ts",
+    find: '  if (!isCanonicalSignature(r["signature"])) out.push("signature");\n',
+    replace: "",
+    tests: [
+      "src/__tests__/claimed-vs-proven.test.ts",
+      "-t",
+      "signature: the standard base64 alphabet →",
+    ],
+  },
+  {
+    name: "K1: the canonical signature form ignores stray trailing bits",
+    file: "src/canonical.ts",
+    find: "const SIG_B64URL = /^[A-Za-z0-9_-]{85}[AQgw]$/;",
+    replace: "const SIG_B64URL = /^[A-Za-z0-9_-]{86}$/;",
+    tests: [
+      "src/__tests__/claimed-vs-proven.test.ts",
+      "-t",
+      "non-zero trailing bits in the last character →",
+    ],
+  },
+  {
+    name: "K1: suite is no longer checked",
+    file: "src/canonical.ts",
+    find: '  if (!isRecognizedSuite(r["suite"])) out.push("suite");\n',
+    replace: "",
+    tests: ["src/__tests__/claimed-vs-proven.test.ts", "-t", "suite: the hex suite"],
+  },
+  {
+    name: "K1: the served-chain check binds a re-spelled key",
+    file: "src/served-chain.ts",
+    find: '  if (!KEY_HEX.test(key)) return { kind: "noncanonical_key" };\n',
+    replace: "",
+    tests: ["src/__tests__/served-chain.test.ts", "-t", "a signing key not in canonical form"],
+  },
+  {
+    name: "K1: a re-spelled key still commits to the id",
+    file: "src/served-chain.ts",
+    find: "  if (!KEY_HEX.test(publicKeyHex)) return false;\n",
+    replace: "",
+    tests: ["src/__tests__/served-chain.test.ts", "-t", "a signing key not in canonical form"],
+  },
+  {
+    name: "K1 defence in depth: the page's memo scan is keyed on the key TEXT again",
+    file: "src/main.ts",
+    find: "      const decodedKey = canonicalKeyHexOfDid(view.signerDid);",
+    replace:
+      '      const decodedKey = typeof receipt.public_key === "string" ? receipt.public_key : undefined;',
+    tests: [
+      "src/__tests__/claimed-vs-proven.test.ts",
+      "-t",
+      "key: -1 for 0xff .decodes to the same bytes., owner's memo",
+    ],
+  },
+  {
+    name: "K1 defence in depth: the page's own scan no longer counts as finding a memo",
+    file: "src/assess.ts",
+    find: '    v.binding === "revoked" ||\n    scanFound;',
+    replace: '    v.binding === "revoked";',
+    tests: [
+      "src/__tests__/claimed-vs-proven.test.ts",
+      "-t",
+      "key: a plus sign .decodes to the same bytes., owner's memo",
+    ],
+  },
+  {
+    name: "K1 defence in depth: the page stops running its own scan",
+    file: "src/main.ts",
+    find: "        ...(memoScan !== undefined ? { memoScan } : {}),\n",
+    replace: "",
+    tests: [
+      "src/__tests__/claimed-vs-proven.test.ts",
+      "-t",
+      "Y1 genesis key with a trailing tab, owner's memo",
+    ],
+  },
+  {
+    name: "rule 8: a ✓ no longer needs the page's own scan to have run",
+    file: "src/assess.ts",
+    find: '  if (evidence.memoScan?.status !== "none") {',
+    replace: "  if (false) {",
+    tests: ["src/__tests__/assess.test.ts", "-t", "own decoded-key scan"],
+  },
+  {
+    name: "rule 8: a failed page scan no longer holds revocation at not established",
+    file: "src/assess.ts",
+    find: '  if (evidence.memoScan?.status === "unknown") {',
+    replace: "  if (false) {",
+    tests: ["src/__tests__/assess.test.ts", "-t", "own decoded-key scan"],
+  },
+  {
+    name: "N1: a memo naming the key with no usable date is dropped again",
+    file: "src/memo-scan.ts",
+    find: '  if (!found) return { status: "none" };',
+    replace: '  if (earliest === undefined) return { status: "none" };',
+    tests: ["src/__tests__/claimed-vs-proven.test.ts", "-t", "a memo with a word for a timestamp"],
+  },
+  {
+    name: "N1: a memo with no timestamp separator is not matched",
+    file: "src/memo-scan.ts",
+    find: "  const needle = `${REVOCATION_MEMO_PREFIX}${keyHex.toLowerCase()}`;",
+    replace: "  const needle = `${REVOCATION_MEMO_PREFIX}${keyHex.toLowerCase()}:`;",
+    tests: ["src/__tests__/claimed-vs-proven.test.ts", "-t", "a memo with no timestamp separator"],
+  },
+  {
+    name: "N1: a memo date outside the Date range is formatted (and throws)",
+    file: "src/labels.ts",
+    find: " || Math.abs(ms) > 8.64e15",
+    replace: "",
+    tests: [
+      "src/__tests__/claimed-vs-proven.test.ts",
+      "-t",
+      "a timestamp past the last representable date",
+    ],
+  },
+  {
+    name: "N2: the revocation ✓ again reads as a scan of the whole chain",
+    file: "src/ladder.ts",
+    find: '          "no revocation memo naming the signing key at the anchor address the relay declares (its transparency declaration, fetched on this visit) — a complete scan of that one address through an independent RPC; memos anywhere else were not looked for",',
+    replace:
+      '          "no revocation memo found for the signing key — a complete scan through an independent RPC",',
+    tests: ["src/__tests__/claimed-vs-proven.test.ts", "-t", "a memo for another key .control."],
+  },
+  {
+    name: "N3: a claimed time outside the displayable range is dropped from the claim",
+    file: "src/claim.ts",
+    find: "      return `${String(value)} — outside the range of dates this page can display`;",
+    replace: "      return undefined;",
+    tests: ["src/__tests__/claimed-vs-proven.test.ts", "-t", "completed_at 1e20"],
+  },
+  {
+    name: "N3: a fractional claimed time is shown rounded, with no value as written",
+    file: "src/claim.ts",
+    find: "    return Number.isSafeInteger(value) ? undefined : `${String(value)} as written`;",
+    replace: "    return undefined;",
+    tests: ["src/__tests__/claimed-vs-proven.test.ts", "-t", "completed_at a fraction"],
+  },
+  {
+    name: "N4: an unverifiable re-spelled key is called altered or forged",
+    file: "src/labels.ts",
+    find: "        why.length > 0\n",
+    replace: "        false\n",
+    tests: ["src/__tests__/claimed-vs-proven.test.ts", "-t", "key: a leading zero"],
+  },
+  {
+    name: "N4: the page stops passing field forms when integrity fails",
+    file: "src/main.ts",
+    find: "    : { ...NO_BINDING_EVIDENCE, noncanonical };",
+    replace: "    : NO_BINDING_EVIDENCE;",
+    tests: [
+      "src/__tests__/claimed-vs-proven.test.ts",
+      "-t",
+      "signature: the same signature hex-encoded",
+    ],
+  },
+  {
+    name: "N4: the INTEGRITY ONLY card stops naming the non-canonical field",
+    file: "src/labels.ts",
+    find: "    formSentences(v) ??\n",
+    replace: "",
+    tests: ["src/__tests__/labels.test.ts", "-t", "integrity-only names each field"],
+  },
+  {
+    name: "N4: the binding rung stops naming the non-canonical field",
+    file: "src/ladder.ts",
+    find: "      if (v.noncanonical !== undefined && v.noncanonical.length > 0) {",
+    replace: "      if (false) {",
+    tests: ["src/__tests__/ladder.test.ts", "-t", "the binding rung names each field"],
+  },
+  {
+    name: "round 4: llms.txt drops the canonical-form rule",
+    file: "public/llms.txt",
+    find: "`public_key` exactly 64 lowercase hex characters",
+    replace: "`public_key` in hex",
+    tests: ["src/__tests__/page.test.ts", "-t", "round 4"],
   },
 ];
 

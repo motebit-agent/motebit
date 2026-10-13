@@ -110,3 +110,37 @@ describe("resultLabels", () => {
     expect(l.detail).toBe("Verification failed.");
   });
 });
+
+describe("canonical form (round 4)", () => {
+  it("integrity-only names each field not in canonical form; the suite reads 'not recognized'", () => {
+    const key = resultLabels(ok({ noncanonical: ["public_key"] }));
+    expect(key.grade).toBe("INTEGRITY ONLY");
+    expect(key.detail).toContain("signing key (public_key) is not in canonical form");
+    const suite = resultLabels(ok({ noncanonical: ["suite", "signature"] }));
+    expect(suite.detail).toContain("Suite not recognized");
+    expect(suite.detail).toContain("signature is not in canonical form");
+  });
+
+  it("an unverifiable re-spelled key or signature is never called forged", () => {
+    for (const f of ["public_key", "signature"] as const) {
+      const l = resultLabels({
+        integrity: false,
+        binding: "unverified",
+        reason: "signature_invalid",
+        noncanonical: [f],
+      });
+      expect(l.grade).toBe("INVALID");
+      expect(l.detail).toContain("not in canonical form");
+      expect(l.detail).not.toMatch(/forg/i);
+    }
+  });
+
+  it("a memo date outside the displayable range is reported undated, never thrown on", () => {
+    for (const at of [1e17, 8.64e15 + 1, Infinity]) {
+      const l = resultLabels(ok({ binding: "revoked", revocation: "revoked", revokedAt: at }));
+      expect(l.grade).toBe("REVOCATION REPORTED");
+      expect(l.detail).not.toMatch(/dated \S+ by its poster/);
+      expect(l.detail).toContain("a memo naming this signing key as revoked was found");
+    }
+  });
+});

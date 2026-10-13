@@ -252,6 +252,15 @@ describe("F-2: evidence read only through Motebit's RPC proxy is labelled, never
     expect(LLMS_TXT).toContain("a did:key that encodes it");
   });
 
+  it("llms.txt states the canonical-form rule for every field and the scan's scope (round 4)", () => {
+    expect(LLMS_TXT).toContain("`public_key` exactly 64 lowercase hex characters");
+    expect(LLMS_TXT).toContain("`signature` exactly unpadded base64url of 64 bytes");
+    expect(LLMS_TXT).toContain("`suite` exactly `motebit-jcs-ed25519-b64-v1`");
+    expect(LLMS_TXT).toContain("uses the decoded key");
+    expect(LLMS_TXT).toContain("a complete scan of the anchor address the relay declares");
+    expect(LLMS_TXT).toContain("A memo naming the key with no usable date is reported too.");
+  });
+
   it("the page copy does not claim the browser queries Solana itself", () => {
     expect(INDEX_HTML).not.toContain("and Solana, with its public key");
     expect(INDEX_HTML).toContain("Motebit's RPC proxy");

@@ -17,7 +17,11 @@ const v = (over: Partial<ReceiptDocumentVerification> = {}): ReceiptDocumentVeri
   binding: "integrity-only",
   ...over,
 });
-const INDEPENDENT_COMPLETE: ChainEvidence = { source: "independent", revocationScanComplete: true };
+const INDEPENDENT_COMPLETE: ChainEvidence = {
+  source: "independent",
+  revocationScanComplete: true,
+  memoScan: { status: "none" },
+};
 const INDEPENDENT_TRUNCATED: ChainEvidence = {
   source: "independent",
   revocationScanComplete: false,
@@ -135,6 +139,56 @@ describe("assessVerdict", () => {
     );
     expect(failed.revocation).toBe("not_established");
     expect(failed.revocationNote).toContain("HTTP 503");
+  });
+
+  it("revocation ✓ also needs the page's own decoded-key scan to have run and found nothing (round 4)", () => {
+    const ran = (memoScan?: ChainEvidence["memoScan"]): ChainEvidence => ({
+      source: "independent",
+      revocationScanComplete: true,
+      ...(memoScan ? { memoScan } : {}),
+    });
+    const notRun = assessVerdict(v({ revocation: "not_revoked" }), ran(), NONE);
+    expect(notRun.revocation).toBe("not_established");
+    expect(notRun.revocationNote).toContain("own scan");
+    const failed = assessVerdict(
+      v({ revocation: "not_revoked" }),
+      ran({ status: "unknown", detail: "HTTP 429" }),
+      NONE,
+    );
+    expect(failed.revocation).toBe("not_established");
+    expect(failed.revocationNote).toContain("HTTP 429");
+    // The page's scan finds a memo the verifier's text-keyed lookup missed.
+    const found = assessVerdict(
+      v({ binding: "sovereign", revocation: "not_revoked" }),
+      ran({ status: "found", revokedAt: 7 }),
+      COMMITS,
+    );
+    expect(found.binding).toBe("revoked");
+    expect(found.revocation).toBe("revoked");
+    expect(found.revokedAt).toBe(7);
+    const undated = assessVerdict(v({ revocation: "not_revoked" }), ran({ status: "found" }), NONE);
+    expect(undated.binding).toBe("revoked");
+    expect(undated.revokedAt).toBeUndefined();
+  });
+
+  it("a field not in canonical form binds nothing and earns no revocation verdict (round 4)", () => {
+    for (const f of ["motebit_id", "public_key", "signature", "suite"] as const) {
+      const r = assessVerdict(
+        v({ binding: "sovereign", revocation: "not_revoked" }),
+        INDEPENDENT_COMPLETE,
+        { ...BOUND_ID, keyCommitsToId: true, noncanonical: [f] },
+      );
+      expect(r.binding, f).toBe("integrity-only");
+      expect(r.revocation, f).toBe("not_established");
+      expect(r.noncanonical, f).toEqual([f]);
+    }
+    // A memo for the decoded key is still reported.
+    const memo = assessVerdict(
+      v({ revocation: "not_revoked" }),
+      { ...INDEPENDENT_COMPLETE, memoScan: { status: "found" } },
+      { keyCommitsToId: false, noncanonical: ["public_key"] },
+    );
+    expect(memo.binding).toBe("revoked");
   });
 
   it("a found revocation stays revoked (reported) from any source, labelled by source", () => {

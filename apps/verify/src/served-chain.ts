@@ -29,6 +29,10 @@
  *      through to the relay-record root and let a relay serve a chain for an id
  *      that renders identical to someone else's. Such an id binds nothing, and
  *      the copy says it is not in canonical form — never that it is forged.
+ *   4. The same for the signing key: only exactly 64 lowercase hex binds or
+ *      commits. The library decodes hex leniently, so a re-spelled key (an
+ *      appended character, whitespace, a sign, upper case) verifies as the
+ *      same bytes while a lookup keyed on its text misses (round 4, K1).
  *
  * The time is the receipt's CLAIMED time: `completed_at` is written by the
  * signer, so "bound" means the key fits the served window at the time the
@@ -59,6 +63,8 @@ export type ServedChainCheck =
   | { readonly kind: "other_motebit" }
   /** The motebit_id is not in an exactly canonical form, so nothing binds to it. */
   | { readonly kind: "noncanonical_id" }
+  /** The signing key is not written as exactly 64 lowercase hex characters, so nothing binds it. */
+  | { readonly kind: "noncanonical_key" }
   /** The chain did not verify, or the receipt cannot be placed in time. */
   | { readonly kind: "invalid"; readonly reason: string };
 
@@ -89,9 +95,20 @@ export function isSelfCertifyingId(motebitId: string): boolean {
   return form === "uuidv8" || form === "did:key";
 }
 
-/** True iff canonical `motebitId` is the self-certifying commitment to `publicKeyHex` (never throws). */
+// The key's canonical form (canonical.ts `isCanonicalKeyHex`, inlined here so
+// this module does not import the one that imports it): exactly 64 lowercase
+// hex. The crypto library decodes hex leniently, so any other spelling of the
+// same bytes would commit and bind just the same — and hide from a lookup
+// keyed on the text (round 4, K1).
+const KEY_HEX = /^[0-9a-f]{64}$/;
+
+/**
+ * True iff canonical `motebitId` is the self-certifying commitment to
+ * `publicKeyHex`, itself in canonical form (never throws).
+ */
 export async function idCommitsToKey(motebitId: unknown, publicKeyHex: unknown): Promise<boolean> {
   if (typeof motebitId !== "string" || typeof publicKeyHex !== "string") return false;
+  if (!KEY_HEX.test(publicKeyHex)) return false;
   if (!isSelfCertifyingId(motebitId)) return false;
   return verifySovereignBinding(motebitId, publicKeyHex);
 }
@@ -112,6 +129,8 @@ export async function checkServedChain(
   // Rule 3: a non-canonical id binds nothing, whatever the relay serves for it.
   const form = classifyId(id);
   if (form === "noncanonical") return { kind: "noncanonical_id" };
+  // The same rule for the key: only its exact canonical spelling binds.
+  if (!KEY_HEX.test(key)) return { kind: "noncanonical_key" };
   if (String(identity.motebit_id) !== id) return { kind: "other_motebit" };
   // Rule 1: no guardian key reaches the verifier — see the module comment.
   const { guardian: _fileNamedGuardian, ...withoutGuardian } = identity;
@@ -154,6 +173,8 @@ export function chainReason(kind: Exclude<ServedChainCheck["kind"], "bound">): s
       return "the chain does not root at the key this motebit_id commits to";
     case "noncanonical_id":
       return NONCANONICAL_REASON;
+    case "noncanonical_key":
+      return "the receipt's signing key is not in canonical form (exactly 64 lowercase hex characters)";
     case "other_motebit":
       return "the relay's record is for a different motebit_id";
     case "invalid":

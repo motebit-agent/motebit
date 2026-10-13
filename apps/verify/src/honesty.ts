@@ -66,7 +66,7 @@ export function honesty(v: DisplayVerdict): Honesty {
     v.binding === "revoked"
       ? "That the key was revoked — the revocation memo is unauthenticated; who posted it was not checked."
       : keyChecked
-        ? "That the key was never stolen — only that no revocation memo naming it, at any date, was found on-chain."
+        ? "That the key was never stolen — only that no revocation memo naming it, at any date, is at the anchor address the relay declares (a complete scan of that one address through an independent RPC); memos anywhere else were not looked for."
         : "That the key is uncompromised — revocation was not established here.",
   );
   return {

@@ -43,7 +43,20 @@
  *
  * A found revocation memo fails closed, but as REPORTED and unauthenticated:
  * the lookup matches the memo text and never checks who signed the
- * transaction, so anyone can post one.
+ * transaction, so anyone can post one. "Found" means found by EITHER the
+ * verifier's lookup or the page's own scan (`memo-scan.ts`), which is keyed on
+ * the DECODED key and reports a memo that names the key with no usable date.
+ *
+ *   7. Every identity-bearing field the signer writes — motebit_id,
+ *      public_key, signature, suite — must be in exact canonical form
+ *      (`canonical.ts`). Any field that is not earns no binding (INTEGRITY
+ *      ONLY) and no revocation verdict above "not established": a re-spelled
+ *      key decodes to the same bytes, so the signature verifies, while
+ *      anything keyed on its text sees another key (round 4, K1). A memo found
+ *      for the decoded key is still reported.
+ *   8. A revocation ✓ needs the page's own scan to have run on the decoded key
+ *      and found nothing, as well as the verifier's. Its scope is one address:
+ *      the anchor address the relay declares — not the whole chain.
  *
  * Every time the page speaks of is the receipt's CLAIMED time. Issuance time is
  * never proven here, and the copy says so.
@@ -51,6 +64,8 @@
 
 import type { ReceiptDocumentVerification } from "@motebit/state-export-client";
 import type { IdForm, ServedChainCheck } from "./served-chain.js";
+import { formReason, type FormField } from "./canonical.js";
+import type { MemoScanResult } from "./memo-scan.js";
 
 /** Who answered the Solana JSON-RPC reads behind the anchor/revocation rungs. */
 export type ChainSource = "operator-proxy" | "independent";
@@ -164,6 +179,11 @@ export interface ChainEvidence {
   readonly source: ChainSource;
   /** The revocation scan provably saw every signature at the relay address. */
   readonly revocationScanComplete: boolean;
+  /**
+   * The page's own memo scan, keyed on the DECODED signing key (`memo-scan.ts`).
+   * Absent ⇒ it did not run, and revocation is not established.
+   */
+  readonly memoScan?: MemoScanResult;
 }
 
 /** What the page itself established about the key ↔ motebit_id relation. */
@@ -174,6 +194,8 @@ export interface BindingEvidence {
   readonly servedChain?: ServedChainCheck;
   /** How the motebit_id is written (`classifyId`); drives the copy, never the binding. */
   readonly idForm?: IdForm;
+  /** Identity-bearing fields not in exact canonical form (`noncanonicalFields`); any ⇒ no binding. */
+  readonly noncanonical?: readonly FormField[];
 }
 
 /** Nested receipts and failed integrity: nothing about the key is established. */
@@ -208,6 +230,8 @@ export interface DisplayVerdict {
   readonly chainCheck?: Exclude<ServedChainCheck["kind"], "bound">;
   /** How the motebit_id is written, when the page classified it. */
   readonly idForm?: IdForm;
+  /** Identity-bearing fields not in canonical form (rule 7); absent ⇒ all canonical or unchecked. */
+  readonly noncanonical?: readonly FormField[];
   readonly signerDid?: string;
   readonly motebitId?: string;
   readonly taskId?: string;
@@ -225,13 +249,26 @@ function revocationNotEstablished(
   }
   if (v.revocation !== "not_revoked") return null;
   if (evidence === undefined) return "the source of the on-chain lookup is unknown";
+  if (evidence.memoScan?.status === "unknown") {
+    return `the on-chain lookup failed (${evidence.memoScan.detail})`;
+  }
   if (evidence.source === "operator-proxy") {
     return `the on-chain lookup was read ${PROXY_LABEL}`;
   }
   if (!evidence.revocationScanComplete) {
     return "the scan stopped at the 200-signature page limit, so an older revocation may not have been seen";
   }
+  if (evidence.memoScan?.status !== "none") {
+    return "this page's own scan for the signing key did not run";
+  }
   return null;
+}
+
+/** The earliest of two optional dates. */
+function earliest(a: number | undefined, b: number | undefined): number | undefined {
+  if (a === undefined) return b;
+  if (b === undefined) return a;
+  return Math.min(a, b);
 }
 
 /** Map the verifier's view + the page's evidence to the claim the page may show. */
@@ -246,14 +283,21 @@ export function assessVerdict(
   const verifierBound =
     v.binding === "sovereign" || v.binding === "pinned" || v.binding === "anchored";
   // Rule 6: a memo found at any date is reported — never cleared by the claimed time.
+  // Found by the verifier's lookup OR by the page's own decoded-key scan.
+  const scanFound = v.integrity && evidence?.memoScan?.status === "found";
   const memoFound =
     v.revocation === "revoked" ||
     v.revocation === "revoked_after_signing" ||
-    v.binding === "revoked";
+    v.binding === "revoked" ||
+    scanFound;
+  // Rule 7: a field not in canonical form binds nothing.
+  const noncanonical = keyEvidence.noncanonical ?? [];
   if (v.binding === "unverified") {
     shown = "unverified";
   } else if (memoFound) {
     shown = "revoked";
+  } else if (noncanonical.length > 0) {
+    shown = "integrity-only";
   } else if (chain?.kind === "bound" && verifierBound) {
     // The page's guardian-free check binds the key at the receipt's CLAIMED time.
     if (v.binding === "anchored" && evidence?.source === "independent") {
@@ -277,10 +321,19 @@ export function assessVerdict(
   if (chain !== undefined && chain.kind !== "bound" && v.integrity) out.chainCheck = chain.kind;
   if (shown === "anchored" && v.anchorTxHash !== undefined) out.anchorTxHash = v.anchorTxHash;
   if (anchorViaProxy) out.anchorViaProxy = true;
-  if (v.revokedAt !== undefined) out.revokedAt = v.revokedAt;
+  const revokedAt = earliest(
+    v.revokedAt,
+    scanFound && evidence?.memoScan?.status === "found" ? evidence.memoScan.revokedAt : undefined,
+  );
+  if (revokedAt !== undefined) out.revokedAt = revokedAt;
   if (keyEvidence.idForm !== undefined && v.integrity) out.idForm = keyEvidence.idForm;
+  if (noncanonical.length > 0) out.noncanonical = noncanonical;
   if (memoFound) {
     out.revocation = "revoked";
+  } else if (noncanonical.length > 0 && v.integrity) {
+    // Rule 7: no revocation verdict for a key the page cannot name canonically.
+    out.revocation = "not_established";
+    out.revocationNote = formReason(noncanonical[0]!);
   } else if (v.revocation !== undefined) {
     const why = revocationNotEstablished(v, evidence);
     if (why !== null) {

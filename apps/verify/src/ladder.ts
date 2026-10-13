@@ -13,6 +13,8 @@
 
 import { PROXY_LABEL, sourceLabel, type DisplayVerdict } from "./assess.js";
 import { chainReason, NONCANONICAL_REASON } from "./served-chain.js";
+import { formReason } from "./canonical.js";
+import { memoDate } from "./labels.js";
 
 export type RungState = "passed" | "skipped" | "failed";
 export type RungKey = "integrity" | "binding" | "revocation";
@@ -111,6 +113,13 @@ function bindingRung(v: DisplayVerdict, ctx: RelayContext): Rung {
       // integrity-only: the offline commitment check ran and did not match; the
       // relay rungs depend on context.
       if (ctx.kind === "nested") return { ...base, state: "skipped", summary: NESTED_REASON };
+      if (v.noncanonical !== undefined && v.noncanonical.length > 0) {
+        return {
+          ...base,
+          state: "skipped",
+          summary: `not established — ${v.noncanonical.map(formReason).join("; ")}`,
+        };
+      }
       if (v.idForm === "noncanonical") {
         return { ...base, state: "skipped", summary: `not established — ${NONCANONICAL_REASON}` };
       }
@@ -136,10 +145,11 @@ function revocationRung(v: DisplayVerdict, ctx: RelayContext): Rung {
   if (v.binding === "revoked" || v.revocation === "revoked") {
     // Any date: completed_at is the signer's claim, so the memo's date relative
     // to it clears nothing.
+    const date = memoDate(v.revokedAt);
     const when =
-      v.revokedAt !== undefined
-        ? `a memo naming this key, dated ${new Date(v.revokedAt).toISOString()} by its poster`
-        : "a memo naming this key";
+      date !== undefined
+        ? `a memo naming this key, dated ${date} by its poster`
+        : "a memo naming this key (with no date this page can show)";
     return {
       ...base,
       state: "failed",
@@ -152,8 +162,10 @@ function revocationRung(v: DisplayVerdict, ctx: RelayContext): Rung {
       return {
         ...base,
         state: "passed",
+        // Its real scope (N2): one address, the one the relay's transparency
+        // declaration names (fetched on this visit) — not the whole chain.
         summary:
-          "no revocation memo found for the signing key — a complete scan through an independent RPC",
+          "no revocation memo naming the signing key at the anchor address the relay declares (its transparency declaration, fetched on this visit) — a complete scan of that one address through an independent RPC; memos anywhere else were not looked for",
       };
     case "not_established":
       return {

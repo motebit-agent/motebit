@@ -9,6 +9,7 @@
 import type { ReceiptDocumentFailureReason } from "@motebit/state-export-client";
 import { PROXY_LABEL, sourceLabel, type DisplayVerdict } from "./assess.js";
 import { chainReason, NONCANONICAL_REASON } from "./served-chain.js";
+import { formReason } from "./canonical.js";
 
 /** Drives the result card's color treatment. */
 export type ResultTone = "bound" | "integrity" | "failed";
@@ -37,6 +38,21 @@ export const CLAIMED_TIME =
 
 const sentence = (s: string): string => `${s[0]!.toUpperCase()}${s.slice(1)}`;
 
+/**
+ * A memo's date as its poster wrote it, or undefined when it is outside the
+ * range a Date can show (it is still reported, just not dated).
+ */
+export function memoDate(ms: number | undefined): string | undefined {
+  if (ms === undefined || !Number.isFinite(ms) || Math.abs(ms) > 8.64e15) return undefined;
+  return new Date(ms).toISOString();
+}
+
+/** One sentence per identity-bearing field not in canonical form (rule 7), or null. */
+export function formSentences(v: DisplayVerdict): string | null {
+  if (v.noncanonical === undefined || v.noncanonical.length === 0) return null;
+  return v.noncanonical.map((f) => `${sentence(formReason(f))}.`).join(" ");
+}
+
 /** How the id commits to the key, in words true for its form. */
 export function commitmentPhrase(v: DisplayVerdict): string {
   return v.idForm === "did:key"
@@ -51,10 +67,8 @@ export function resultLabels(v: DisplayVerdict): ResultLabels {
   // date: the receipt's completed_at is the signer's claim, so a memo dated
   // after it clears nothing.
   if (v.binding === "revoked") {
-    const dated =
-      v.revokedAt !== undefined
-        ? `, dated ${new Date(v.revokedAt).toISOString()} by its poster,`
-        : "";
+    const date = memoDate(v.revokedAt);
+    const dated = date !== undefined ? `, dated ${date} by its poster,` : "";
     return {
       tone: "failed",
       grade: "REVOCATION REPORTED",
@@ -63,11 +77,24 @@ export function resultLabels(v: DisplayVerdict): ResultLabels {
     };
   }
   if (!v.integrity) {
+    // A key or signature not in canonical form may be an honest re-spelling of
+    // a genuine one: say what is wrong with it, never "forged".
+    const unreadable = (v.noncanonical ?? []).filter(
+      (f) => f === "public_key" || f === "signature",
+    );
+    const why = unreadable.map((f) =>
+      f === "public_key"
+        ? "The embedded signing key (public_key) is not in canonical form (exactly 64 lowercase hex characters)."
+        : "The signature is not in canonical form (unpadded base64url of 64 bytes, the encoding its suite specifies).",
+    );
     return {
       tone: "failed",
       grade: "INVALID",
       headline: "Verification failed",
-      detail: FAILURE_DETAIL[v.reason ?? "unknown"] ?? FAILURE_DETAIL.unknown,
+      detail:
+        why.length > 0
+          ? `The signature does not verify as written. ${why.join(" ")} This page checks a receipt only as written, so nothing here is verified — which is not evidence of tampering either way.`
+          : (FAILURE_DETAIL[v.reason ?? "unknown"] ?? FAILURE_DETAIL.unknown),
     };
   }
   if (v.binding === "key-commitment") {
@@ -117,11 +144,12 @@ export function resultLabels(v: DisplayVerdict): ResultLabels {
   // against the receipt's OWN embedded key — that proves the bytes weren't
   // tampered, NOT that the key belongs to this motebit.
   const anchor =
-    v.idForm === "noncanonical"
+    formSentences(v) ??
+    (v.idForm === "noncanonical"
       ? `${sentence(NONCANONICAL_REASON)}.`
       : v.chainCheck !== undefined
         ? `The identity chain the relay served does not bind this key: ${chainReason(v.chainCheck)}.`
-        : "No trust anchor was provided.";
+        : "No trust anchor was provided.");
   return {
     tone: "integrity",
     grade: "INTEGRITY ONLY",

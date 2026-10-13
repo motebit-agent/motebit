@@ -75,8 +75,16 @@ function claimFields(c: ClaimNode): HTMLElement {
   if (c.status !== undefined) dl.append(field("status", c.status));
   if (c.result !== undefined) dl.append(field("result", resultValue(c)));
   // Both times are written by the signer; the label says so.
-  if (c.submitted) dl.append(field("submitted (signer's claim)", timeValue(c.submitted)));
-  if (c.completed) dl.append(field("completed (signer's claim)", timeValue(c.completed)));
+  // A value that is not a displayable time is still shown, as written (N3).
+  const claimed = (label: string, t?: ClaimTime, asWritten?: string): void => {
+    if (t === undefined && asWritten === undefined) return;
+    const value = el("span", "");
+    if (t !== undefined) value.append(timeValue(t));
+    if (asWritten !== undefined) value.append(el("span", "field-sub mono", asWritten));
+    dl.append(field(`${label} (signer's claim)`, value));
+  };
+  claimed("submitted", c.submitted, c.submittedAsWritten);
+  claimed("completed", c.completed, c.completedAsWritten);
   dl.append(field("tools used", c.toolsUsed.length > 0 ? c.toolsUsed.join(", ") : "none", true));
   if (c.memoriesFormed !== undefined) dl.append(field("memories formed", String(c.memoriesFormed)));
   if (c.delegatedScope !== undefined) dl.append(field("delegated scope", c.delegatedScope, true));

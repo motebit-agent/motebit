@@ -39,6 +39,8 @@ import {
   type ChainEvidence,
 } from "./assess.js";
 import { checkServedChain, classifyId, idCommitsToKey } from "./served-chain.js";
+import { canonicalKeyHexOfDid, noncanonicalFields } from "./canonical.js";
+import { scanRevocationMemos } from "./memo-scan.js";
 import { resolveReceiptBinding } from "./relay-binding.js";
 import type { RelayContext } from "./ladder.js";
 import { SAMPLE_JSON, tamperResult } from "./sample.js";
@@ -162,12 +164,17 @@ async function verifyAndRender(text: string, seq: number, src: Source): Promise<
     public_key?: unknown;
     completed_at?: unknown;
   };
+  // Every identity-bearing field the signer wrote, checked for exact canonical
+  // form — even when integrity fails, so the copy never calls a re-spelled key
+  // or signature forged.
+  const noncanonical = noncanonicalFields(parsed);
   let keyEvidence: BindingEvidence = view.integrity
     ? {
         keyCommitsToId: await idCommitsToKey(receipt.motebit_id, receipt.public_key),
         idForm: classifyId(receipt.motebit_id),
+        noncanonical,
       }
-    : NO_BINDING_EVIDENCE;
+    : { ...NO_BINDING_EVIDENCE, noncanonical };
   if (src === "sample" || src === "tampered-sample") {
     ctx = offline("offline — the sample is verified in this tab, with no relay context");
   } else if (src === "minted") {
@@ -194,9 +201,22 @@ async function verifyAndRender(text: string, seq: number, src: Source): Promise<
           lookup: { rpcUrl: SOLANA_RPC, fetch: revocationScan.fetch },
         },
       });
+      // The page's own scan, keyed on the DECODED key (the bytes the signature
+      // verified under, read back from the verifier's did:key), so a memo is
+      // found however the receipt spelled public_key — and reported even
+      // without a usable date.
+      const decodedKey = canonicalKeyHexOfDid(view.signerDid);
+      const memoScan =
+        decodedKey !== undefined
+          ? await scanRevocationMemos(resolved.relayAnchorAddress, decodedKey, {
+              rpcUrl: SOLANA_RPC,
+              fetch: revocationScan.fetch,
+            })
+          : undefined;
       evidence = {
         source: SOLANA_RPC_SOURCE,
         revocationScanComplete: scansComplete(revocationScan.scans),
+        ...(memoScan !== undefined ? { memoScan } : {}),
       };
       keyEvidence = {
         ...keyEvidence,
