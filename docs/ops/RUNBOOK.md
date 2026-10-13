@@ -143,12 +143,13 @@ receipt.computer is the public verifier, so what it serves must be the exact bui
 
 Production changes only by founder approval of an exact artifact:
 
-1. **Build and check.** From a clean tree at the reviewed commit, on Node 22:
+1. **Build and check.** From a fully clean worktree at the reviewed commit, on Node 22:
    ```bash
-   scripts/stage-receipt-computer.sh --expect <reviewed-manifest.txt> --deploy
+   scripts/stage-receipt-computer.sh --expect <reviewed-manifest.txt> --commit <reviewed-sha> --deploy
    ```
    - The script refuses to deploy unless `apps/verify/dist` matches the reviewed sha256 manifest exactly.
-   - It uploads a prebuilt Build Output directory, so there is no install or build on Vercel and no environment variables baked in.
+   - It uploads a prebuilt Build Output directory, so Vercel runs no install or build and injects no build-time env.
+   - The local build is the one that could embed env, so the script runs it with every `VITE_*` variable unset, and refuses to run if any `apps/verify/.env*` file exists.
    - `--skip-domain` leaves receipt.computer unchanged.
 2. **Verify the staged URL.**
    - `scripts/stage-receipt-computer.sh --verify <url> <manifest>` re-hashes the served files. Vercel's security checkpoint can answer automated clients with 403; check in a browser if so.

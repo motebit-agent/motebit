@@ -8,12 +8,15 @@
 # exact artifact the founder approved (see docs/ops/RUNBOOK.md §3,
 # "receipt.computer"). This script:
 #
-#   1. builds apps/verify from a clean tree (turbo --force, Node 22);
+#   1. builds apps/verify from a fully clean worktree (turbo --force, Node 22),
+#      optionally pinned to a reviewed commit with --commit <sha>;
 #   2. prints the sha256 manifest of dist/ and, with --expect, refuses to
 #      continue unless it matches a reviewed manifest exactly;
 #   3. packages dist/ as a Vercel Build Output API directory (static files +
 #      the same rewrite as apps/verify/vercel.json), so Vercel uploads it as-is:
-#      no install, no build, no environment variables baked in;
+#      no Vercel-side install, build or build-time env injection. The LOCAL
+#      build is the one that could embed env, so it runs with every VITE_*
+#      variable unset and refuses any apps/verify/.env* file;
 #   4. with --deploy, runs `vercel deploy --prebuilt --prod --skip-domain`,
 #      which creates a production-environment deployment but does NOT assign
 #      receipt.computer.
@@ -24,7 +27,7 @@
 # Usage:
 #   scripts/stage-receipt-computer.sh                         # build + manifest only
 #   scripts/stage-receipt-computer.sh --expect manifest.txt   # ... and require a match
-#   scripts/stage-receipt-computer.sh --expect manifest.txt --deploy
+#   scripts/stage-receipt-computer.sh --expect manifest.txt --commit <sha> --deploy
 #   scripts/stage-receipt-computer.sh --verify <url> manifest.txt   # re-hash a served deployment
 #
 set -euo pipefail
@@ -48,22 +51,29 @@ if [ "${1:-}" = "--verify" ]; then
   exit $fail
 fi
 
-expect=""; deploy=0
+expect=""; deploy=0; commit=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --expect) expect="${2:?--expect needs a manifest file}"; shift 2 ;;
     --deploy) deploy=1; shift ;;
+    --commit) commit="${2:?--commit needs a sha}"; shift 2 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
 [ $deploy = 1 ] && [ -z "$expect" ] && die "--deploy requires --expect <reviewed manifest>"
 
 cd "$ROOT_DIR"
-[ -z "$(git status --porcelain -- apps/verify packages)" ] || die "apps/verify or packages has uncommitted changes; build from a clean tree"
+[ -z "$(git status --porcelain)" ] || die "the worktree has uncommitted or untracked changes; build from a fully clean tree"
+if [ -n "$commit" ]; then
+  [ "$(git rev-parse HEAD)" = "$(git rev-parse --verify "$commit^{commit}")" ] || die "HEAD is not the reviewed commit $commit"
+fi
+! ls "$APP"/.env* >/dev/null 2>&1 || die "apps/verify has a .env* file; a local build would embed it"
 node -v | grep -q '^v22\.' || die "Node 22 required (found $(node -v))"
 log "commit $(git rev-parse HEAD)"
 
-pnpm turbo run build --filter=@motebit/verify-web... --force >&2
+# Unset every VITE_* variable so the local build cannot embed the operator's shell env.
+unset_vite=(); for v in $(env | sed -n 's/^\(VITE_[A-Za-z0-9_]*\)=.*/\1/p'); do unset_vite+=(-u "$v"); done
+env ${unset_vite[@]+"${unset_vite[@]}"} pnpm turbo run build --filter=@motebit/verify-web... --force >&2
 manifest="$(manifest_of "$APP/dist")"
 echo "$manifest"
 
