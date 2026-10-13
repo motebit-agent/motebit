@@ -165,6 +165,22 @@ describe("checkServedChain", () => {
     ).toEqual({ kind: "noncanonical_id" });
   });
 
+  it("a signing key not in canonical form commits to nothing and binds nothing (round 4: K1)", async () => {
+    const g = r(G1);
+    for (const key of [
+      `${g.public_key}x`,
+      `${g.public_key} `,
+      `${g.public_key}\n`,
+      g.public_key.toUpperCase(),
+    ]) {
+      expect(await idCommitsToKey(g.motebit_id, key), JSON.stringify(key)).toBe(false);
+      expect(
+        await checkServedChain({ ...g, public_key: key }, identityOf(G1_CTX)),
+        JSON.stringify(key),
+      ).toEqual({ kind: "noncanonical_key" });
+    }
+  });
+
   it("every non-binding outcome has a reason clause", () => {
     for (const k of [
       "not_active",
@@ -173,6 +189,7 @@ describe("checkServedChain", () => {
       "root_mismatch",
       "other_motebit",
       "noncanonical_id",
+      "noncanonical_key",
       "invalid",
     ] as const) {
       expect(chainReason(k).length).toBeGreaterThan(10);

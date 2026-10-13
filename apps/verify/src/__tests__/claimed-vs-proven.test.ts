@@ -27,7 +27,22 @@
  *   revocation     a memo naming the key is unauthenticated and its date is the
  *                  poster's claim. ANY memo found for the key is REVOCATION
  *                  REPORTED with its source, whatever its date relative to the
- *                  receipt's claimed time; never ✓.
+ *                  receipt's claimed time — and whether or not it carries a
+ *                  usable date at all; never ✓. A ✓ states its real scope: one
+ *                  complete scan of the anchor address the relay declares.
+ *   field form     public_key, signature and suite are the signer's text, like
+ *                  the id. The verifier decodes the key and signature leniently
+ *                  (an appended character, whitespace, a sign, upper case,
+ *                  padding, the standard alphabet all decode to the same bytes),
+ *                  so a re-spelled key still verifies — while any lookup keyed
+ *                  on the TEXT misses the owner's memo. Only the exact canonical
+ *                  form earns anything above INTEGRITY ONLY: public_key is
+ *                  exactly 64 lowercase hex, signature exactly unpadded base64url
+ *                  of 64 bytes (the receipt suite's encoding), suite exactly
+ *                  motebit-jcs-ed25519-b64-v1. Anything else reads "not in
+ *                  canonical form" (or "suite not recognized"), never a ✓,
+ *                  never "forged" — and the page's own memo scan runs on the
+ *                  DECODED key, so a re-spelled key still shows its owner's memo.
  *
  * Each case's expected display is written from that contract, not from what
  * the page happened to render.
@@ -35,12 +50,16 @@
 import { chai, describe, expect, it } from "vitest";
 import {
   bytesToHex,
+  canonicalJsonForSigning,
   deriveSovereignMotebitId,
   getPublicKeyBySuite,
   hash,
   hexPublicKeyToDidKey,
+  signBySuite,
   signExecutionReceipt,
   signKeySuccession,
+  toBase64Url,
+  verifyReceipt,
   type KeySuccessionRecord,
 } from "@motebit/crypto";
 import {
@@ -108,6 +127,41 @@ async function receipt(
   return JSON.stringify(signed, null, 2);
 }
 
+/**
+ * Mint a receipt whose identity-bearing fields are written exactly as given —
+ * the signer chooses the text of public_key, suite and signature, and the
+ * signature covers whatever public_key and suite text it chose.
+ */
+async function mintAs(o: {
+  readonly key: Key;
+  readonly id: string;
+  readonly at?: unknown;
+  readonly keyText?: string;
+  readonly suite?: string;
+  readonly sig?: (canonical: string) => string;
+  readonly task?: string;
+}): Promise<string> {
+  const utf8 = (s: string): Uint8Array => new TextEncoder().encode(s);
+  const result = "Paid invoice #42 for $5.00.";
+  const body = {
+    task_id: o.task ?? "cvp-form",
+    motebit_id: o.id,
+    device_id: "cvp-device",
+    submitted_at: AT - 1000,
+    completed_at: o.at ?? AT,
+    status: "completed",
+    result,
+    tools_used: [],
+    memories_formed: 0,
+    prompt_hash: await hash(utf8("prompt")),
+    result_hash: await hash(utf8(result)),
+    public_key: o.keyText ?? o.key.hex,
+    suite: o.suite ?? B64,
+  };
+  const sig = toBase64Url(await signBySuite(B64, utf8(canonicalJsonForSigning(body)), o.key.priv));
+  return JSON.stringify({ ...body, signature: o.sig ? o.sig(sig) : sig }, null, 2);
+}
+
 function bundle(id: string, current: string, succession: KeySuccessionRecord[] = []): unknown {
   return {
     motebit_id: id,
@@ -123,7 +177,8 @@ const memo = (hex: string, at: number): string => `motebit:revocation:v1:${hex}:
 /** What the contract says the page must show. */
 interface Expected {
   /** The badge, exactly. */
-  readonly grade: "PINNED" | "KEY COMMITMENT" | "INTEGRITY ONLY" | "REVOCATION REPORTED";
+  readonly grade:
+    "PINNED" | "KEY COMMITMENT" | "INTEGRITY ONLY" | "REVOCATION REPORTED" | "INVALID";
   /** The revocation rung: ✓ allowed only on a complete independent scan with no memo. */
   readonly revocation: "reported" | "ok" | "not-ok";
   /** Extra text the card must contain. */
@@ -155,6 +210,9 @@ const PINNED_CARD_CONDITIONS = [
 ];
 
 const NONCANONICAL = "not in canonical form";
+const SUITE_UNKNOWN = "suite not recognized";
+/** The ✓'s real scope (N2): one address, the one the relay declares. */
+const SCAN_SCOPE = "the anchor address the relay declares";
 
 async function buildCases(): Promise<Case[]> {
   const cases: Case[] = [];
@@ -396,6 +454,334 @@ async function buildCases(): Promise<Case[]> {
       memos: [memo(legacy.hex, AT + 8999)],
     });
   }
+
+  // ── Field form: the signing key re-spelled (K1, Y1–Y4) ─────────────────
+  // Each spelling decodes (leniently) to the same 32 bytes, so the signature
+  // verifies — but only exact lowercase hex is the key's canonical form.
+  const respell = (hex: string): Array<[string, string]> => [
+    ["an appended character", `${hex}x`],
+    ["a trailing space", `${hex} `],
+    ["a trailing newline", `${hex}\n`],
+    ["a trailing tab", `${hex}\t`],
+    ["a trailing NUL", `${hex}\u0000`],
+    ["a trailing zero-width space", `${hex}\u200b`],
+    ["upper case", hex.toUpperCase()],
+  ];
+  const k0Memo = memo(victim.hex, T1 + 1);
+  const yShapes: Array<{
+    readonly y: string;
+    readonly key: Key;
+    readonly id: string;
+    readonly at: number;
+    readonly bundle: unknown;
+    readonly memo: string;
+  }> = [
+    {
+      y: "Y1 genesis key",
+      key: victim,
+      id: V,
+      at: AT,
+      bundle: neverRotated,
+      memo: memo(victim.hex, AT - 500),
+    },
+    {
+      y: "Y2 rotated-to K1",
+      key: k1,
+      id: V,
+      at: T1 + 60_000,
+      bundle: rotated,
+      memo: memo(k1.hex, T1 + 1000),
+    },
+    {
+      y: "Y3 retired K0 backdated (X13)",
+      key: victim,
+      id: V,
+      at: T1 - 86_400_000,
+      bundle: rotated,
+      memo: k0Memo,
+    },
+    {
+      y: "Y4 legacy id",
+      key: legacy,
+      id: LEGACY_V7,
+      at: AT,
+      bundle: bundle(LEGACY_V7, legacy.hex),
+      memo: memo(legacy.hex, AT - 500),
+    },
+  ];
+  for (const shape of yShapes) {
+    for (const [spelling, keyText] of respell(shape.key.hex)) {
+      for (const [where, rpc, source] of [
+        ["proxy", undefined, PROXY_SOURCE],
+        ["independent RPC", INDEPENDENT_RPC, INDEPENDENT_SOURCE],
+      ] as const) {
+        const r = await mintAs({
+          key: shape.key,
+          id: shape.id,
+          at: shape.at,
+          keyText,
+          task: "cvp-key",
+        });
+        add({
+          name: `key (${where}): ${shape.y} with ${spelling}, owner's memo posted → the memo is still shown`,
+          receipt: r,
+          ctx: { bundle: shape.bundle, memos: [shape.memo] },
+          ...(rpc ? { rpc } : {}),
+          expected: {
+            grade: "REVOCATION REPORTED",
+            revocation: "reported",
+            contains: [source],
+            forbids: [/forg/i],
+          },
+        });
+        add({
+          name: `key (${where}): ${shape.y} with ${spelling}, no memo → INTEGRITY ONLY, not canonical, no ✓`,
+          receipt: r,
+          ctx: { bundle: shape.bundle, memos: [] },
+          ...(rpc ? { rpc } : {}),
+          expected: {
+            grade: "INTEGRITY ONLY",
+            revocation: "not-ok",
+            contains: [NONCANONICAL],
+            forbids: [/forg/i, /the chain does not contain this key/],
+          },
+        });
+      }
+    }
+  }
+  // Sign tricks: parseInt reads "+a", " a", "ag" as 0x0a and "-1" as 0xff.
+  let trick: Key | undefined;
+  for (let s = 0x11; trick === undefined; s++) {
+    const k = await kp(s);
+    if (/^(?:..)*0[0-9a-f]/.test(k.hex) && /^(?:..)*ff/.test(k.hex)) trick = k;
+  }
+  const T = trick;
+  const TV = await deriveSovereignMotebitId(T.hex);
+  const lowPair = /^((?:..)*?)0([0-9a-f])/.exec(T.hex)!;
+  const ffPair = /^((?:..)*?)ff/.exec(T.hex)!;
+  const swap = (at: number, by: string): string =>
+    `${T.hex.slice(0, at)}${by}${T.hex.slice(at + 2)}`;
+  const tricks: Array<[string, string]> = [
+    ["a plus sign", swap(lowPair[1]!.length, `+${lowPair[2]!}`)],
+    ["a leading space inside a byte", swap(lowPair[1]!.length, ` ${lowPair[2]!}`)],
+    ["a non-hex second digit", swap(lowPair[1]!.length, `${lowPair[2]!}g`)],
+    ["-1 for 0xff", swap(ffPair[1]!.length, "-1")],
+  ];
+  for (const [label, keyText] of tricks) {
+    const r = await mintAs({ key: T, id: TV, keyText, task: "cvp-trick" });
+    add({
+      name: `key: ${label} (decodes to the same bytes), owner's memo posted → the memo is still shown`,
+      receipt: r,
+      ctx: { bundle: bundle(TV, T.hex), memos: [memo(T.hex, AT - 500)] },
+      rpc: INDEPENDENT_RPC,
+      expected: { grade: "REVOCATION REPORTED", revocation: "reported", forbids: [/forg/i] },
+    });
+    add({
+      name: `key: ${label}, no memo → INTEGRITY ONLY, not canonical, no ✓`,
+      receipt: r,
+      ctx: { bundle: bundle(TV, T.hex), memos: [] },
+      rpc: INDEPENDENT_RPC,
+      expected: {
+        grade: "INTEGRITY ONLY",
+        revocation: "not-ok",
+        contains: [NONCANONICAL],
+        forbids: [/forg/i],
+      },
+    });
+  }
+  // Spellings that do not decode to the signing key: not verified, and not called a forgery.
+  for (const [label, keyText] of [
+    ["two leading zeros", `00${victim.hex}`],
+    ["a leading zero (odd length)", `0${victim.hex}`],
+    ["a 0x prefix", `0x${victim.hex}`],
+    ["the key in base64url", toBase64Url(victim.pub)],
+    ["the key as a did:key", DIDV],
+  ] as const) {
+    add({
+      name: `key: ${label} → INVALID, says the key is not in canonical form, never "forged"`,
+      receipt: await mintAs({ key: victim, id: V, keyText, task: "cvp-badkey" }),
+      ctx: { bundle: neverRotated, memos: [] },
+      rpc: INDEPENDENT_RPC,
+      expected: {
+        grade: "INVALID",
+        revocation: "not-ok",
+        contains: [NONCANONICAL],
+        forbids: [/forg/i],
+      },
+    });
+  }
+
+  // ── Field form: the signature re-encoded ─────────────────────────────────
+  // Find a signature that uses the URL-safe characters, so the standard
+  // alphabet is a real re-spelling of it.
+  let urlSafe = "";
+  for (let i = 0; urlSafe === ""; i++) {
+    const r = await mintAs({ key: victim, id: V, task: `cvp-sig-${i}` });
+    if (/[-_]/.test((JSON.parse(r) as { signature: string }).signature)) urlSafe = `cvp-sig-${i}`;
+  }
+  const lastBits = (s: string): string => {
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const i = alphabet.indexOf(s.at(-1)!);
+    return `${s.slice(0, -1)}${alphabet[i | 1]!}`;
+  };
+  const sigVariants: Array<[string, (s: string) => string]> = [
+    ["= padding", (s) => `${s}==`],
+    ["the standard base64 alphabet", (s) => s.replace(/-/g, "+").replace(/_/g, "/")],
+    ["a trailing space", (s) => `${s} `],
+    ["a line break inside", (s) => `${s.slice(0, 40)}\n${s.slice(40)}`],
+    ["a tab inside", (s) => `${s.slice(0, 40)}\t${s.slice(40)}`],
+    ["non-zero trailing bits in the last character", lastBits],
+  ];
+  for (const [label, f] of sigVariants) {
+    const r = await mintAs({ key: victim, id: V, task: urlSafe, sig: f });
+    // Whether the lenient decoder accepts a given spelling depends on the
+    // runtime's atob; the contract holds either way: never above INTEGRITY
+    // ONLY, never "forged", and a memo is shown whenever integrity holds.
+    const decodes = (await verifyReceipt(JSON.parse(r) as Parameters<typeof verifyReceipt>[0]))
+      .valid;
+    add({
+      name: `signature: ${label} → ${decodes ? "INTEGRITY ONLY" : "INVALID"}, not canonical, no ✓`,
+      receipt: r,
+      ctx: { bundle: neverRotated, memos: [] },
+      rpc: INDEPENDENT_RPC,
+      expected: {
+        grade: decodes ? "INTEGRITY ONLY" : "INVALID",
+        revocation: "not-ok",
+        contains: [NONCANONICAL],
+        forbids: [/forg/i],
+      },
+    });
+    if (decodes) {
+      add({
+        name: `signature: ${label}, memo posted → the memo is still shown`,
+        receipt: r,
+        ctx: { bundle: neverRotated, memos: [memo(victim.hex, AT - 500)] },
+        rpc: INDEPENDENT_RPC,
+        expected: { grade: "REVOCATION REPORTED", revocation: "reported" },
+      });
+    }
+  }
+  add({
+    name: 'signature: the same signature hex-encoded on the b64 suite → INVALID, not canonical, never "forged"',
+    receipt: await mintAs({
+      key: victim,
+      id: V,
+      task: urlSafe,
+      sig: (s) => {
+        const bin = atob(s.replace(/-/g, "+").replace(/_/g, "/"));
+        return Array.from(bin, (c) => c.charCodeAt(0).toString(16).padStart(2, "0")).join("");
+      },
+    }),
+    ctx: { bundle: neverRotated, memos: [] },
+    rpc: INDEPENDENT_RPC,
+    expected: {
+      grade: "INVALID",
+      revocation: "not-ok",
+      contains: [NONCANONICAL],
+      forbids: [/forg/i],
+    },
+  });
+  add({
+    name: "signature: canonical (control)",
+    receipt: await mintAs({ key: victim, id: V, task: urlSafe }),
+    ctx: { bundle: neverRotated, memos: [] },
+    rpc: INDEPENDENT_RPC,
+    expected: { grade: "PINNED", revocation: "ok" },
+  });
+
+  // ── Field form: the suite ────────────────────────────────────────────────
+  // The receipt verifier checks every receipt under the b64 suite whatever its
+  // `suite` says, so the field is the signer's unchecked text.
+  for (const [label, suite] of [
+    ["the hex suite (wrong suite for a receipt)", "motebit-jcs-ed25519-hex-v1"],
+    ["an unknown suite", "motebit-jcs-ed25519-b64-v9"],
+    ["a trailing space", `${B64} `],
+    ["upper case", B64.toUpperCase()],
+    ["a zero-width space", `${B64}\u200b`],
+    ["an empty string", ""],
+  ] as const) {
+    const r = await mintAs({ key: victim, id: V, suite, task: "cvp-suite" });
+    add({
+      name: `suite: ${label} → INTEGRITY ONLY, suite not recognized, no ✓`,
+      receipt: r,
+      ctx: { bundle: neverRotated, memos: [] },
+      rpc: INDEPENDENT_RPC,
+      expected: {
+        grade: "INTEGRITY ONLY",
+        revocation: "not-ok",
+        contains: [SUITE_UNKNOWN],
+        forbids: [/forg/i],
+      },
+    });
+    add({
+      name: `suite: ${label}, memo posted → the memo is still shown`,
+      receipt: r,
+      ctx: { bundle: neverRotated, memos: [memo(victim.hex, AT - 500)] },
+      rpc: INDEPENDENT_RPC,
+      expected: { grade: "REVOCATION REPORTED", revocation: "reported" },
+    });
+  }
+  add({
+    name: "suite: a legacy id with an unknown suite → INTEGRITY ONLY, never PINNED",
+    receipt: await mintAs({ key: legacy, id: LEGACY_V7, suite: "x", task: "cvp-suite-legacy" }),
+    ctx: { bundle: bundle(LEGACY_V7, legacy.hex), memos: [] },
+    rpc: INDEPENDENT_RPC,
+    expected: { grade: "INTEGRITY ONLY", revocation: "not-ok", contains: [SUITE_UNKNOWN] },
+  });
+  add({
+    name: "all four fields canonical, relay down → KEY COMMITMENT (control)",
+    receipt: await mintAs({ key: victim, id: V, task: "cvp-all" }),
+    ctx: { relayDown: true },
+    expected: { grade: "KEY COMMITMENT", revocation: "not-ok" },
+  });
+
+  // ── N1: a memo naming the key without a usable date is still a memo ──────
+  for (const [where, rpc, source] of [
+    ["proxy", undefined, PROXY_SOURCE],
+    ["independent RPC", INDEPENDENT_RPC, INDEPENDENT_SOURCE],
+  ] as const) {
+    const g = await receipt(victim, V, AT, "cvp-n1");
+    for (const [label, m] of [
+      ["an empty timestamp", `motebit:revocation:v1:${victim.hex}:`],
+      ["a word for a timestamp", `motebit:revocation:v1:${victim.hex}:revoked`],
+      ["no timestamp separator", `motebit:revocation:v1:${victim.hex}`],
+      [
+        "a 400-digit timestamp (overflows to Infinity)",
+        `motebit:revocation:v1:${victim.hex}:${"9".repeat(400)}`,
+      ],
+      [
+        "a timestamp past the last representable date",
+        `motebit:revocation:v1:${victim.hex}:99999999999999999`,
+      ],
+      ["an upper-case key", `motebit:revocation:v1:${victim.hex.toUpperCase()}:5`],
+    ] as const) {
+      add({
+        name: `revocation (${where}): a memo with ${label} → REVOCATION REPORTED, never ignored`,
+        receipt: g,
+        ctx: { bundle: neverRotated, memos: [m] },
+        ...(rpc ? { rpc } : {}),
+        expected: { grade: "REVOCATION REPORTED", revocation: "reported", contains: [source] },
+      });
+    }
+  }
+
+  // ── N3: a claimed time outside the displayable range is still shown ──────
+  for (const [label, at, shown] of [
+    ["1e20", 1e20, "100000000000000000000"],
+    ["one past the last displayable date", 8_640_000_000_000_001, "8640000000000001"],
+    ["a fraction", AT + 0.5, `${AT + 0.5}`],
+  ] as const) {
+    add({
+      name: `time: completed_at ${label} → shown in the claim as the signer's value`,
+      receipt: await receipt(victim, V, at, "cvp-n3"),
+      ctx: { bundle: neverRotated, memos: [] },
+      expected: {
+        grade: "PINNED",
+        revocation: "not-ok",
+        contains: [shown],
+      },
+    });
+  }
   add({
     name: "revocation: a memo beyond the 200-signature window is not hidden behind ✓",
     receipt: await receipt(victim, V, AT),
@@ -456,6 +842,13 @@ function check(c: Case): string[] {
     if (container().querySelector(".chip-ok") !== null) bad.push("claim chip is ok");
   } else if (e.revocation === "ok") {
     if (r !== "ok") bad.push(`revocation rung ${String(r)}, expected ✓`);
+    // N2: the ✓ names its scope, on the rung and in the honesty block.
+    const rungText = rung("revocation")?.textContent ?? "";
+    if (!rungText.includes(SCAN_SCOPE)) bad.push(`revocation ✓ does not say "${SCAN_SCOPE}"`);
+    const notProves = container().querySelector(".not-proves")?.textContent ?? "";
+    if (!notProves.includes(SCAN_SCOPE)) bad.push(`honesty block does not say "${SCAN_SCOPE}"`);
+    if (/found on-chain/.test(notProves))
+      bad.push("honesty block says the memo was not found on-chain");
   } else if (r === "ok") {
     bad.push("revocation rung ✓ without a complete independent scan and no memo");
   }
