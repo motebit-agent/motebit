@@ -31,6 +31,18 @@ import D5 from "./fixtures/D5-pinned.json?raw";
 import D5_CTX from "./fixtures/D5-pinned.ctx.json?raw";
 import D6A from "./fixtures/D6a-anchored.json?raw";
 import D6A_CTX from "./fixtures/D6a-anchored.ctx.json?raw";
+import G1 from "./fixtures/G1-genesis-current-chain-served.json?raw";
+import G1_CTX from "./fixtures/G1-genesis-current-chain-served.ctx.json?raw";
+import G2 from "./fixtures/G2-historical-before-rotation-chain-served.json?raw";
+import G2_CTX from "./fixtures/G2-historical-before-rotation-chain-served.ctx.json?raw";
+import G3 from "./fixtures/G3-rotated-key-chain-served.json?raw";
+import G3_CTX from "./fixtures/G3-rotated-key-chain-served.ctx.json?raw";
+import FG from "./fixtures/FG-forged-guardian-recovery.json?raw";
+import FG_CTX from "./fixtures/FG-forged-guardian-recovery.ctx.json?raw";
+import FGL from "./fixtures/FGL-forged-guardian-recovery-legacy.json?raw";
+import FGL_CTX from "./fixtures/FGL-forged-guardian-recovery-legacy.ctx.json?raw";
+import FS from "./fixtures/FS-served-genesis-not-id-commitment.json?raw";
+import FS_CTX from "./fixtures/FS-served-genesis-not-id-commitment.ctx.json?raw";
 
 const FIXTURES: Record<string, string> = {
   "A4-victim-sovereign": A4,
@@ -43,6 +55,18 @@ const FIXTURES: Record<string, string> = {
   "D5-pinned.ctx": D5_CTX,
   "D6a-anchored": D6A,
   "D6a-anchored.ctx": D6A_CTX,
+  "G1-genesis-current-chain-served": G1,
+  "G1-genesis-current-chain-served.ctx": G1_CTX,
+  "G2-historical-before-rotation-chain-served": G2,
+  "G2-historical-before-rotation-chain-served.ctx": G2_CTX,
+  "G3-rotated-key-chain-served": G3,
+  "G3-rotated-key-chain-served.ctx": G3_CTX,
+  "FG-forged-guardian-recovery": FG,
+  "FG-forged-guardian-recovery.ctx": FG_CTX,
+  "FGL-forged-guardian-recovery-legacy": FGL,
+  "FGL-forged-guardian-recovery-legacy.ctx": FGL_CTX,
+  "FS-served-genesis-not-id-commitment": FS,
+  "FS-served-genesis-not-id-commitment.ctx": FS_CTX,
 };
 const fixture = (name: string): string => {
   const text = FIXTURES[name];
@@ -338,4 +362,130 @@ describe("F-2: evidence read only through Motebit's RPC proxy is labelled, never
     expect(INDEX_HTML).toContain("Motebit's RPC proxy");
     expect(INDEX_HTML).not.toMatch(/so it verifies <em>sovereign<\/em>/);
   });
+});
+
+/** Statements that are only true when the motebit_id commits to the key AND no chain was checked. */
+const NO_CHAIN_COMMITMENT_COPY = /hash of this key|no succession check ran|original key/;
+
+describe("B: the relay-served chain binds the key at the receipt's time → the strongest rung it supports", () => {
+  for (const [name, why] of [
+    ["G1-genesis-current-chain-served", "genesis key, never rotated"],
+    ["G2-historical-before-rotation-chain-served", "genesis key, signed before a later rotation"],
+    ["G3-rotated-key-chain-served", "the rotated-to key, after a signed rotation"],
+  ] as const) {
+    it(`${why} (${name}) → PINNED, not KEY COMMITMENT, never SOVEREIGN`, async () => {
+      await openPage({ hash: linkHash(fixture(name)), ctx: ctxOf(name) });
+      await settled();
+      expect(grade()).toBe("PINNED");
+      expect(rung("binding")?.querySelector(".check-mark.ok")).not.toBeNull();
+      const text = container().textContent ?? "";
+      expect(text).not.toMatch(/sovereign/i);
+      expect(text).not.toContain("KEY COMMITMENT");
+      expect(text).not.toMatch(/non-equivocable/);
+      expect(text).not.toContain("supplied by you");
+    });
+  }
+
+  it("G3: the rotated-to key is never described as the key the id hashes, or as unchecked", async () => {
+    const name = "G3-rotated-key-chain-served";
+    await openPage({ hash: linkHash(fixture(name)), ctx: ctxOf(name) });
+    await settled();
+    expect(container().textContent ?? "").not.toMatch(NO_CHAIN_COMMITMENT_COPY);
+  });
+
+  it("G3 with the relay unreachable → INTEGRITY ONLY (the id does not commit to this key)", async () => {
+    const name = "G3-rotated-key-chain-served";
+    await openPage({ hash: linkHash(fixture(name)), ctx: { relayDown: true } });
+    await settled();
+    expect(grade()).toBe("INTEGRITY ONLY");
+    expect(container().textContent ?? "").not.toMatch(NO_CHAIN_COMMITMENT_COPY);
+  });
+
+  it("legacy UUID id with its chain served is unchanged → PINNED", async () => {
+    const name = "D5-pinned";
+    await openPage({ hash: linkHash(fixture(name)), ctx: ctxOf(name) });
+    await settled();
+    expect(grade()).toBe("PINNED");
+  });
+});
+
+describe("B: a served chain that does not bind the key never binds it", () => {
+  it("a guardian named only inside the relay-served file does not establish a recovery link (sovereign id)", async () => {
+    const name = "FG-forged-guardian-recovery";
+    await openPage({
+      hash: linkHash(fixture(name)),
+      ctx: ctxOf(name),
+      rpc: "http://localhost:8899",
+    });
+    await settled();
+    expect(grade()).toBe("INTEGRITY ONLY");
+    expect(container().querySelector(".tone-bound")).toBeNull();
+    expect(rung("binding")?.querySelector(".check-mark.ok")).toBeNull();
+    const text = container().textContent ?? "";
+    expect(text).not.toMatch(/sovereign|KEY COMMITMENT|PINNED|ANCHORED/);
+    expect(rung("binding")?.textContent).toContain("guardian");
+  });
+
+  it("the same forged guardian on a legacy id does not reach PINNED", async () => {
+    const name = "FGL-forged-guardian-recovery-legacy";
+    await openPage({
+      hash: linkHash(fixture(name)),
+      ctx: ctxOf(name),
+      rpc: "http://localhost:8899",
+    });
+    await settled();
+    expect(grade()).toBe("INTEGRITY ONLY");
+    expect(container().querySelector(".tone-bound")).toBeNull();
+  });
+
+  it("a served chain whose genesis is not the key a self-certifying id commits to does not bind", async () => {
+    const name = "FS-served-genesis-not-id-commitment";
+    await openPage({
+      hash: linkHash(fixture(name)),
+      ctx: ctxOf(name),
+      rpc: "http://localhost:8899",
+    });
+    await settled();
+    expect(grade()).toBe("INTEGRITY ONLY");
+    expect(container().querySelector(".tone-bound")).toBeNull();
+  });
+
+  it("a retired genesis key signing after rotation → KEY COMMITMENT, and says the succession check ran", async () => {
+    const name = "D4a-retired-genesis-after-rotation";
+    await openPage({ hash: linkHash(fixture(name)), ctx: ctxOf(name) });
+    await settled();
+    expect(grade()).toBe("KEY COMMITMENT");
+    const text = container().textContent ?? "";
+    expect(text).not.toContain("no succession check ran");
+    expect(rung("binding")?.textContent).toContain("not active");
+  });
+});
+
+describe("G: a revocation memo is unauthenticated — reported, never a definitive 'Key revoked'", () => {
+  const name = "D5-pinned";
+  const legacyHex = (): string => (JSON.parse(fixture(name)) as { public_key: string }).public_key;
+  const junk = (): string => `[42] gm ser motebit:revocation:v1:${legacyHex()}:0 lol`;
+
+  for (const [label, rpc, sourceText] of [
+    ["the operator proxy", undefined, "via Motebit's RPC proxy (not independently confirmed)"],
+    ["an independent RPC", "http://localhost:8899", "through an RPC the operator does not run"],
+  ] as const) {
+    it(`a third-party memo read through ${label} → REVOCATION REPORTED (unauthenticated), fail-closed`, async () => {
+      await openPage({
+        hash: linkHash(fixture(name)),
+        ctx: { ...ctxOf(name), memos: [junk()] },
+        ...(rpc ? { rpc } : {}),
+      });
+      await settled();
+      expect(grade()).toBe("REVOCATION REPORTED");
+      const text = container().textContent ?? "";
+      expect(text).toContain("REVOCATION REPORTED (unauthenticated)");
+      expect(text).toContain(sourceText);
+      expect(text).not.toMatch(/Key revoked|revoked on-chain at/);
+      expect(container().querySelector(".tone-failed")).not.toBeNull();
+      expect(container().querySelector(".chip-ok")).toBeNull();
+      expect(rung("revocation")?.querySelector(".check-mark.ok")).toBeNull();
+      expect(rung("binding")?.querySelector(".check-mark.ok")).toBeNull();
+    });
+  }
 });
