@@ -142,7 +142,7 @@ interface Case {
 
 /** Copy that treats the signer's claimed time as when the receipt was signed. */
 const SIGNING_TIME_AS_FACT =
-  /before signing|when it signed|when signed|at the receipt's time|at this receipt's time|not revoked when signed|revoked after signing/i;
+  /before signing|when it signed|when signed|at the receipt's time|at this receipt's time|at or before this receipt|not revoked when signed|revoked after signing|time-valid/i;
 
 /** The conditional a PINNED card must carry ON THE CARD (the grade block itself). */
 const PINNED_CARD_CONDITIONS = [
@@ -232,18 +232,18 @@ async function buildCases(): Promise<Case[]> {
 
   // ── Id form: a chain rooted at the attacker's key, served for a lookalike id ──
   const lookalikes: Array<[string, string]> = [
-    ["UUIDv8 + zero-width space", `${V}​`],
+    ["UUIDv8 + zero-width space", `${V}\u200b`],
     ["UUIDv8 + trailing space", `${V} `],
     ["UUIDv8 + leading space", ` ${V}`],
     ["UUIDv8 + tab", `${V}\t`],
     ["UUIDv8 uppercase", V.toUpperCase()],
-    ["UUIDv8 with a Cyrillic homoglyph", V.replace("a", "а")],
-    ["UUIDv8 with a bidi override", `${V.slice(0, 9)}‮${V.slice(9)}`],
+    ["UUIDv8 with a Cyrillic homoglyph", V.replace("a", "\u0430")],
+    ["UUIDv8 with a bidi override", `${V.slice(0, 9)}\u202e${V.slice(9)}`],
     ["DID:KEY uppercase prefix", `DID:KEY:${DIDV.slice("did:key:".length)}`],
-    ["did:key + zero-width joiner", `${DIDV}‍`],
+    ["did:key + zero-width joiner", `${DIDV}\u200d`],
     ["legacy UUIDv7 uppercase", LEGACY_V7.toUpperCase()],
-    ["legacy UUIDv7 + zero-width space", `${LEGACY_V7}​`],
-    ["legacy UUIDv7 with a bidi override", `‮${LEGACY_V7}`],
+    ["legacy UUIDv7 + zero-width space", `${LEGACY_V7}\u200b`],
+    ["legacy UUIDv7 with a bidi override", `\u202e${LEGACY_V7}`],
     ["urn:uuid: prefix", `urn:uuid:${LEGACY_V7}`],
     ["braced UUID", `{${LEGACY_V7}}`],
     ["UUID without hyphens", LEGACY_V7.replace(/-/g, "")],
@@ -268,6 +268,12 @@ async function buildCases(): Promise<Case[]> {
     name: "id: uppercase UUIDv8 signed by the key it commits to (relay down) → no key commitment",
     receipt: await receipt(victim, V.toUpperCase(), AT),
     ctx: { relayDown: true },
+    expected: { grade: "INTEGRITY ONLY", revocation: "not-ok", contains: [NONCANONICAL] },
+  });
+  add({
+    name: "id: uppercase UUIDv8 signed by the key it commits to, its own chain served → no binding",
+    receipt: await receipt(victim, V.toUpperCase(), AT),
+    ctx: { bundle: bundle(V.toUpperCase(), victim.hex), memos: [] },
     expected: { grade: "INTEGRITY ONLY", revocation: "not-ok", contains: [NONCANONICAL] },
   });
   add({
@@ -431,6 +437,11 @@ function check(c: Case): string[] {
   const e = c.expected;
   if (grade() !== e.grade) bad.push(`grade ${String(grade())} ≠ ${e.grade}`);
   if (/sovereign/i.test(text)) bad.push("says sovereign");
+  const claim = container().querySelector(".claim")?.textContent ?? "";
+  const claimedAt = (JSON.parse(c.receipt) as { completed_at?: unknown }).completed_at;
+  if (typeof claimedAt === "number" && !claim.includes("completed (signer's claim)")) {
+    bad.push("claim field does not mark completed_at as claimed");
+  }
   const t = SIGNING_TIME_AS_FACT.exec(text);
   if (t) bad.push(`treats the claimed time as the signing time: "${t[0]}"`);
   // The binding rung is ✓ only on a bound grade; never ✗ (not established is "—").

@@ -13,11 +13,13 @@
  *
  * What is SHOWN is the display verdict (`assess.ts`), never the raw view: the
  * identity binding comes from the page's own check of the relay-served chain
- * (`served-chain.ts`, no file-named guardian honoured) — PINNED when it binds
- * the key at the receipt's time, a key commitment when only the id's own
+ * (`served-chain.ts`, no file-named guardian honoured, canonical ids only) —
+ * PINNED when it binds the key at the receipt's CLAIMED time (completed_at is
+ * the signer's own claim), a key commitment when only the id's own
  * arithmetic does, never SOVEREIGN — and chain reads through Motebit's RPC
  * proxy, or a revocation scan that stopped at the page limit, never show as
- * anchored or as a revocation ✓. Any input change
+ * anchored or as a revocation ✓. Any revocation memo found for the key is
+ * reported, whatever its date against the claimed time. Any input change
  * clears the previous verdict at once; a verifier exception renders an explicit
  * "Not verified" state.
  */
@@ -36,7 +38,7 @@ import {
   type BindingEvidence,
   type ChainEvidence,
 } from "./assess.js";
-import { checkServedChain, idCommitsToKey } from "./served-chain.js";
+import { checkServedChain, classifyId, idCommitsToKey } from "./served-chain.js";
 import { resolveReceiptBinding } from "./relay-binding.js";
 import type { RelayContext } from "./ladder.js";
 import { SAMPLE_JSON, tamperResult } from "./sample.js";
@@ -161,7 +163,10 @@ async function verifyAndRender(text: string, seq: number, src: Source): Promise<
     completed_at?: unknown;
   };
   let keyEvidence: BindingEvidence = view.integrity
-    ? { keyCommitsToId: await idCommitsToKey(receipt.motebit_id, receipt.public_key) }
+    ? {
+        keyCommitsToId: await idCommitsToKey(receipt.motebit_id, receipt.public_key),
+        idForm: classifyId(receipt.motebit_id),
+      }
     : NO_BINDING_EVIDENCE;
   if (src === "sample" || src === "tampered-sample") {
     ctx = offline("offline — the sample is verified in this tab, with no relay context");

@@ -17,13 +17,15 @@ export interface Honesty {
 function bindingLine(v: DisplayVerdict): string {
   switch (v.binding) {
     case "key-commitment":
-      return "How the key relates to this motebit_id: the id is a hash of the key, so the identity commitment matches the motebit's original key. That is arithmetic — a key minted a second ago commits the same way.";
+      return v.idForm === "did:key"
+        ? "How the key relates to this motebit_id: the id encodes the key (a did:key), so the identity commitment matches the motebit's original key. That is arithmetic — a key minted a second ago commits the same way."
+        : "How the key relates to this motebit_id: the id is derived from the key, so the identity commitment matches the motebit's original key. That is arithmetic — a key minted a second ago commits the same way.";
     case "anchored":
-      return "How the key binds to this motebit_id: through the relay's identity log, whose root was found on-chain through an independent RPC (anchored).";
+      return "How the key binds to this motebit_id: through the relay's identity log, whose root was found on-chain through an independent RPC (anchored), at the time this receipt claims.";
     case "pinned":
       return v.chainRoot === "id-commitment"
-        ? "How the key binds to this motebit_id: through the identity chain the relay served (pinned), which roots at the key the id commits to."
-        : "How the key binds to this motebit_id: through the identity chain the relay served (pinned).";
+        ? "How the key binds to this motebit_id: through the identity chain the relay served (pinned), which roots at the key the id commits to, at the time this receipt claims."
+        : "How the key binds to this motebit_id: through the identity chain the relay served (pinned), at the time this receipt claims.";
     default:
       return "How the key binds to this motebit_id: it does not — the motebit_id here is only a claim.";
   }
@@ -38,7 +40,8 @@ export function honesty(v: DisplayVerdict): Honesty {
       doesNotProve: ["Who wrote it, or that it was ever signed. Treat the claim as untrusted."],
     };
   }
-  const keyChecked = v.revocation === "not_revoked" || v.revocation === "revoked_after_signing";
+  // Only a complete independent scan with NO memo at any date counts as checked.
+  const keyChecked = v.revocation === "not_revoked";
   const notProven = [
     "That the result is correct or true — only that this signer said it.",
     "Who operates the agent behind the key.",
@@ -47,11 +50,14 @@ export function honesty(v: DisplayVerdict): Honesty {
   if (v.binding === "key-commitment") {
     notProven.push(
       v.chainCheck !== undefined
-        ? "That this key was still the motebit's key when it signed — the identity chain the relay served does not bind it at that time."
-        : "That this key was still the motebit's key when it signed — rotation and revocation not established.",
+        ? "That this key was still the motebit's key when the receipt was issued — completed_at is the signer's own claim, and the identity chain the relay served does not bind the key even at that claimed time."
+        : "That this key was still the motebit's key when the receipt was issued — completed_at is the signer's own claim, and rotation and revocation were not established.",
     );
   }
   if (v.binding === "pinned" || v.binding === "anchored") {
+    notProven.push(
+      "When the receipt was issued — completed_at is the signer's own claim; a key retired later can still sign a receipt dated inside its old window.",
+    );
     notProven.push(
       "That the relay served the whole chain — a later rotation it did not serve would not show here.",
     );
@@ -60,7 +66,7 @@ export function honesty(v: DisplayVerdict): Honesty {
     v.binding === "revoked"
       ? "That the key was revoked — the revocation memo is unauthenticated; who posted it was not checked."
       : keyChecked
-        ? "That the key was never stolen — only that no revocation memo dated before signing was found on-chain."
+        ? "That the key was never stolen — only that no revocation memo naming it, at any date, was found on-chain."
         : "That the key is uncompromised — revocation was not established here.",
   );
   return {

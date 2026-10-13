@@ -34,6 +34,7 @@ import {
   typeIn,
   type MockCtx,
 } from "./page-harness.js";
+import LLMS_TXT from "../../public/llms.txt?raw";
 import A4 from "./fixtures/A4-victim-sovereign.json?raw";
 import C4 from "./fixtures/C4-delegation-null-signed.json?raw";
 import C5 from "./fixtures/C5-delegation-string-signed.json?raw";
@@ -241,6 +242,16 @@ describe("F-2: evidence read only through Motebit's RPC proxy is labelled, never
     expect(grade()).toBe("ANCHORED");
   });
 
+  it("llms.txt states that completed_at is claimed and that any memo is reported (round 3)", () => {
+    expect(LLMS_TXT).not.toMatch(/time-valid at the receipt's time|before signing|when it signed/);
+    expect(LLMS_TXT).toContain(
+      "which the signer writes, so pinned does not prove when the receipt was issued",
+    );
+    expect(LLMS_TXT).toContain("whatever its date relative to the receipt's `completed_at`");
+    expect(LLMS_TXT).toContain("Only an exactly canonical id binds at all");
+    expect(LLMS_TXT).toContain("a did:key that encodes it");
+  });
+
   it("the page copy does not claim the browser queries Solana itself", () => {
     expect(INDEX_HTML).not.toContain("and Solana, with its public key");
     expect(INDEX_HTML).toContain("Motebit's RPC proxy");
@@ -371,6 +382,29 @@ describe("G: a revocation memo is unauthenticated — reported, never a definiti
       expect(container().querySelector(".chip-ok")).toBeNull();
       expect(rung("revocation")?.querySelector(".check-mark.ok")).toBeNull();
       expect(rung("binding")?.querySelector(".check-mark.ok")).toBeNull();
+    });
+  }
+});
+
+describe("PINNED is conditional ON THE CARD, not only further down the page (round 3: F3)", () => {
+  for (const name of ["D5-pinned", "G1-genesis-current-chain-served"] as const) {
+    it(`${name}: the grade block itself states what PINNED rests on and what it does not prove`, async () => {
+      await openPage({ hash: linkHash(fixture(name)), ctx: ctxOf(name) });
+      await settled();
+      expect(grade()).toBe("PINNED");
+      // The verdict card's own grade block (badge + headline + detail), not the
+      // ladder or the "does not prove" list below it.
+      const card = container().querySelector(".result-card .proof > .grade")?.textContent ?? "";
+      expect(card).toContain("PINNED");
+      // What it rests on: the served succession evidence AND the claimed timestamp.
+      expect(card).toContain("the succession chain the relay served");
+      expect(card).toContain("at the time this receipt claims");
+      expect(card).toContain("completed_at is the signer's own claim");
+      // What it does not prove.
+      expect(card).toContain("does not prove when the receipt was issued");
+      expect(card).toContain("that the relay served the complete history");
+      expect(card).toContain("that the key was uncompromised");
+      expect(card).not.toMatch(/time-valid at this receipt's time|when it signed|before signing/);
     });
   }
 });

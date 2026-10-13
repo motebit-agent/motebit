@@ -21,9 +21,20 @@
  *      anywhere else is the relay's word against the id's own arithmetic.
  *      A legacy (UUIDv7/v4) id commits to no key, so its chain is the relay's
  *      record by construction — PINNED says "as served by the relay".
+ *   3. Only an EXACTLY canonical id binds at all (`classifyId`): a lowercase
+ *      UUIDv8, a lowercase `did:key:z…`, or a lowercase legacy UUIDv7/v4. The
+ *      id is the signer's text and the relay echoes it back, so any other form
+ *      (zero-width or bidi characters, a homoglyph, whitespace, upper case, a
+ *      `urn:uuid:` prefix, braces, another UUID version) would otherwise fall
+ *      through to the relay-record root and let a relay serve a chain for an id
+ *      that renders identical to someone else's. Such an id binds nothing, and
+ *      the copy says it is not in canonical form — never that it is forged.
  *
- * The time window is only as complete as the chain served: a later rotation
- * the relay withheld cannot be seen, which the PINNED copy says.
+ * The time is the receipt's CLAIMED time: `completed_at` is written by the
+ * signer, so "bound" means the key fits the served window at the time the
+ * receipt claims, not that the receipt was issued then. The window is only as
+ * complete as the chain served: a later rotation the relay withheld cannot be
+ * seen, which the PINNED copy says.
  */
 
 import {
@@ -34,9 +45,9 @@ import {
 
 /** The outcome of checking a relay-served chain against one receipt. */
 export type ServedChainCheck =
-  /** The key is time-valid at the receipt's time in a chain verified without any guardian link. */
+  /** The key fits the window at the receipt's CLAIMED time in a chain verified without any guardian link. */
   | { readonly kind: "bound"; readonly root: "id-commitment" | "relay-record" }
-  /** The chain is valid and names the key, but not as active at the receipt's time. */
+  /** The chain is valid and names the key, but not as active at the receipt's claimed time. */
   | { readonly kind: "not_active" }
   /** The chain is valid and does not contain the key. */
   | { readonly kind: "not_in_chain" }
@@ -46,19 +57,42 @@ export type ServedChainCheck =
   | { readonly kind: "root_mismatch" }
   /** The served record is for another motebit_id. */
   | { readonly kind: "other_motebit" }
+  /** The motebit_id is not in an exactly canonical form, so nothing binds to it. */
+  | { readonly kind: "noncanonical_id" }
   /** The chain did not verify, or the receipt cannot be placed in time. */
   | { readonly kind: "invalid"; readonly reason: string };
 
-const UUID_V8 = /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+/** How a motebit_id is written — and so what, if anything, it may bind through. */
+export type IdForm = "uuidv8" | "did:key" | "legacy-uuid" | "noncanonical";
 
-/** An id that commits to a key by itself: a sovereign UUIDv8 or a `did:key`. */
-export function isSelfCertifyingId(motebitId: string): boolean {
-  return UUID_V8.test(motebitId) || motebitId.startsWith("did:key:");
+// Exact, lowercase, anchored. No `i` flag: an upper-case id is another string
+// the relay can serve a chain for, not the same id.
+const UUID_V8 = /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const UUID_LEGACY = /^[0-9a-f]{8}-[0-9a-f]{4}-[47][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const DID_KEY = /^did:key:z[1-9A-HJ-NP-Za-km-z]+$/;
+
+/**
+ * Classify `motebitId` by its exact text. Only the three canonical forms may
+ * bind; everything else is `noncanonical` (rule 3 in the module comment).
+ */
+export function classifyId(motebitId: unknown): IdForm {
+  if (typeof motebitId !== "string") return "noncanonical";
+  if (UUID_V8.test(motebitId)) return "uuidv8";
+  if (DID_KEY.test(motebitId)) return "did:key";
+  if (UUID_LEGACY.test(motebitId)) return "legacy-uuid";
+  return "noncanonical";
 }
 
-/** True iff `motebitId` is the self-certifying commitment to `publicKeyHex` (never throws). */
+/** An id that commits to a key by itself: a canonical sovereign UUIDv8 or `did:key`. */
+export function isSelfCertifyingId(motebitId: string): boolean {
+  const form = classifyId(motebitId);
+  return form === "uuidv8" || form === "did:key";
+}
+
+/** True iff canonical `motebitId` is the self-certifying commitment to `publicKeyHex` (never throws). */
 export async function idCommitsToKey(motebitId: unknown, publicKeyHex: unknown): Promise<boolean> {
   if (typeof motebitId !== "string" || typeof publicKeyHex !== "string") return false;
+  if (!isSelfCertifyingId(motebitId)) return false;
   return verifySovereignBinding(motebitId, publicKeyHex);
 }
 
@@ -75,13 +109,16 @@ export async function checkServedChain(
   if (typeof id !== "string" || typeof key !== "string" || typeof at !== "number") {
     return { kind: "invalid", reason: "the receipt has no signing key or completion time" };
   }
+  // Rule 3: a non-canonical id binds nothing, whatever the relay serves for it.
+  const form = classifyId(id);
+  if (form === "noncanonical") return { kind: "noncanonical_id" };
   if (String(identity.motebit_id) !== id) return { kind: "other_motebit" };
   // Rule 1: no guardian key reaches the verifier — see the module comment.
   const { guardian: _fileNamedGuardian, ...withoutGuardian } = identity;
   try {
     const r = await verifyKeyBindingAtTime(withoutGuardian, key, at);
     if (r.bound) {
-      if (isSelfCertifyingId(id)) {
+      if (form !== "legacy-uuid") {
         // Rule 2: the chain must root at the key the id commits to.
         return r.sovereign === true
           ? { kind: "bound", root: "id-commitment" }
@@ -100,17 +137,23 @@ export async function checkServedChain(
   }
 }
 
+/** Why a non-canonical motebit_id binds nothing — the same words wherever it is shown. */
+export const NONCANONICAL_REASON =
+  "this motebit_id is not in canonical form (a lowercase UUID or did:key with no extra, invisible or look-alike characters), so this page binds no key to it";
+
 /** Why a served chain did not bind the key — one clause, for the copy. */
 export function chainReason(kind: Exclude<ServedChainCheck["kind"], "bound">): string {
   switch (kind) {
     case "not_active":
-      return "the key is in the chain but not active at the receipt's time (a signed rotation had moved it away, or it was not yet in use)";
+      return "the key is in the chain but not active at the time this receipt claims (a signed rotation had moved it away, or it was not yet in use)";
     case "not_in_chain":
       return "the chain does not contain this key";
     case "recovery_unverifiable":
       return "the chain contains a guardian-recovery link, and the only source of its guardian key is the relay's own record, so this page does not honour it";
     case "root_mismatch":
       return "the chain does not root at the key this motebit_id commits to";
+    case "noncanonical_id":
+      return NONCANONICAL_REASON;
     case "other_motebit":
       return "the relay's record is for a different motebit_id";
     case "invalid":

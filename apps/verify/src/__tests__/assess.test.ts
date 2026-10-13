@@ -116,7 +116,7 @@ describe("assessVerdict", () => {
   });
 
   it("revocation ✓ only on a complete independent scan", () => {
-    for (const r of ["not_revoked", "revoked_after_signing"] as const) {
+    for (const r of ["not_revoked"] as const) {
       expect(assessVerdict(v({ revocation: r }), INDEPENDENT_COMPLETE, NONE).revocation).toBe(r);
       const trunc = assessVerdict(v({ revocation: r }), INDEPENDENT_TRUNCATED, NONE);
       expect(trunc.revocation).toBe("not_established");
@@ -149,6 +149,23 @@ describe("assessVerdict", () => {
     expect(sourceLabel(r.chainSource)).toBe(PROXY_LABEL);
     expect(sourceLabel("independent")).toBe("through an RPC the operator does not run");
     expect(sourceLabel(undefined)).toBe("from an unrecorded source");
+  });
+
+  it("a memo dated AFTER the claimed completed_at is reported exactly like one before it (F1)", () => {
+    // completed_at is the signer's claim: the verifier's "revoked_after_signing"
+    // clears nothing, whatever the source and however complete the scan.
+    for (const ev of [INDEPENDENT_COMPLETE, INDEPENDENT_TRUNCATED, PROXY_COMPLETE, undefined]) {
+      for (const keyEv of [BOUND_ID, BOUND_RELAY, NONE]) {
+        const r = assessVerdict(
+          v({ binding: "pinned", revocation: "revoked_after_signing", revokedAt: 9 }),
+          ev,
+          keyEv,
+        );
+        expect(r.binding).toBe("revoked");
+        expect(r.revocation).toBe("revoked");
+        expect(r.revokedAt).toBe(9);
+      }
+    }
   });
 
   it("offline views pass through without chain fields", () => {

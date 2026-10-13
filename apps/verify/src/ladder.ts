@@ -12,7 +12,7 @@
  */
 
 import { PROXY_LABEL, sourceLabel, type DisplayVerdict } from "./assess.js";
-import { chainReason } from "./served-chain.js";
+import { chainReason, NONCANONICAL_REASON } from "./served-chain.js";
 
 export type RungState = "passed" | "skipped" | "failed";
 export type RungKey = "integrity" | "binding" | "revocation";
@@ -69,8 +69,8 @@ function bindingRung(v: DisplayVerdict, ctx: RelayContext): Rung {
         state: "skipped",
         summary:
           v.chainCheck !== undefined
-            ? `not bound — the motebit_id commits to this key (its original key), but the identity chain the relay served does not bind it at the receipt's time: ${chainReason(v.chainCheck)}`
-            : "not established as current — identity commitment matches the motebit's original key; rotation and revocation not established (the motebit_id is a hash of this key, checked offline; no succession check ran)",
+            ? `not bound — the motebit_id commits to this key (its original key), but the identity chain the relay served does not bind it at the time this receipt claims: ${chainReason(v.chainCheck)}`
+            : `not established as current — identity commitment matches the motebit's original key; rotation and revocation not established (${v.idForm === "did:key" ? "the motebit_id encodes this key" : "the motebit_id is derived from this key"}, checked offline; no succession check ran)`,
       };
     case "anchored":
       return {
@@ -78,8 +78,8 @@ function bindingRung(v: DisplayVerdict, ctx: RelayContext): Rung {
         state: "passed",
         level: "anchored",
         summary: v.anchorTxHash
-          ? `anchored — the key is in the relay's identity log, whose root was found on-chain through an independent RPC (tx ${v.anchorTxHash})`
-          : "anchored — the key is in the relay's identity log, whose root was found on-chain through an independent RPC",
+          ? `anchored — the key fits the time window at the time this receipt claims in the relay's identity log, whose root was found on-chain through an independent RPC (tx ${v.anchorTxHash}); when the receipt was issued is not proven`
+          : "anchored — the key fits the time window at the time this receipt claims in the relay's identity log, whose root was found on-chain through an independent RPC; when the receipt was issued is not proven",
       };
     case "pinned": {
       const root =
@@ -93,16 +93,17 @@ function bindingRung(v: DisplayVerdict, ctx: RelayContext): Rung {
         state: "passed",
         level: "pinned",
         summary: v.anchorViaProxy
-          ? `pinned — the key was time-valid at the receipt's time in this motebit's identity chain, as served by the relay${root}; the relay's on-chain anchor was read ${PROXY_LABEL}`
-          : `pinned — the key was time-valid at the receipt's time in this motebit's identity chain, as served by the relay${root}`,
+          ? `pinned — the key fits the time window at the time this receipt claims (completed_at, the signer's own claim) in this motebit's identity chain, as served by the relay${root}; when the receipt was issued is not proven; the relay's on-chain anchor was read ${PROXY_LABEL}`
+          : `pinned — the key fits the time window at the time this receipt claims (completed_at, the signer's own claim) in this motebit's identity chain, as served by the relay${root}; when the receipt was issued is not proven`,
       };
     }
     case "revoked":
+      // Not established, so "—", never ✗: the memo is unauthenticated, so the
+      // page has not shown the binding fails either.
       return {
         ...base,
-        state: "failed",
-        summary:
-          "not established — a revocation (unauthenticated) was reported for this key at or before this receipt",
+        state: "skipped",
+        summary: "not established — a revocation memo (unauthenticated) was reported for this key",
       };
     case "unverified":
       return { ...base, state: "skipped", summary: "not checked: integrity failed" };
@@ -110,6 +111,9 @@ function bindingRung(v: DisplayVerdict, ctx: RelayContext): Rung {
       // integrity-only: the offline commitment check ran and did not match; the
       // relay rungs depend on context.
       if (ctx.kind === "nested") return { ...base, state: "skipped", summary: NESTED_REASON };
+      if (v.idForm === "noncanonical") {
+        return { ...base, state: "skipped", summary: `not established — ${NONCANONICAL_REASON}` };
+      }
       const why =
         ctx.kind === "offline"
           ? ctx.reason
@@ -130,14 +134,16 @@ function bindingRung(v: DisplayVerdict, ctx: RelayContext): Rung {
 function revocationRung(v: DisplayVerdict, ctx: RelayContext): Rung {
   const base = { key: "revocation" as const, name: "Revocation" };
   if (v.binding === "revoked" || v.revocation === "revoked") {
+    // Any date: completed_at is the signer's claim, so the memo's date relative
+    // to it clears nothing.
     const when =
       v.revokedAt !== undefined
-        ? `a memo dated ${new Date(v.revokedAt).toISOString()}, at or before this receipt`
-        : "a memo dated at or before this receipt";
+        ? `a memo naming this key, dated ${new Date(v.revokedAt).toISOString()} by its poster`
+        : "a memo naming this key";
     return {
       ...base,
       state: "failed",
-      summary: `REVOCATION REPORTED (unauthenticated) — ${when}; who posted it was not checked — read ${sourceLabel(v.chainSource)}`,
+      summary: `REVOCATION REPORTED (unauthenticated) — ${when}, reported whatever this receipt's claimed time; who posted it was not checked — read ${sourceLabel(v.chainSource)}`,
     };
   }
   if (!v.integrity) return { ...base, state: "skipped", summary: "not checked: integrity failed" };
@@ -148,15 +154,6 @@ function revocationRung(v: DisplayVerdict, ctx: RelayContext): Rung {
         state: "passed",
         summary:
           "no revocation memo found for the signing key — a complete scan through an independent RPC",
-      };
-    case "revoked_after_signing":
-      return {
-        ...base,
-        state: "passed",
-        summary:
-          v.revokedAt !== undefined
-            ? `no revocation reported at or before signing — a later memo (unauthenticated), dated ${new Date(v.revokedAt).toISOString()}, was found`
-            : "no revocation reported at or before signing — a later memo (unauthenticated) was found",
       };
     case "not_established":
       return {

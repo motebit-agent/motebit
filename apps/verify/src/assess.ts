@@ -10,15 +10,17 @@
  * the receipt-alone commitment and the time-windowed succession path, and the
  * latter trusts a guardian named inside the served file (`served-chain.ts`):
  *
- *   1. The relay-served chain binds the signing key at the receipt's time
- *      (checked by the page with no guardian link honoured) → `pinned`, or
+ *   1. The relay-served chain binds the signing key at the receipt's CLAIMED
+ *      time (checked by the page with no guardian link honoured, for an
+ *      exactly canonical id only) → `pinned`, or
  *      `anchored` when the verifier also reached anchored on independent
  *      evidence. Never SOVEREIGN: the time window is only as complete as the
  *      chain the relay chose to serve.
  *   2. No served chain binds it, but the motebit_id is the self-certifying
  *      commitment to the signing key → `key-commitment`: integrity holds and
  *      the id commits to this key, but whether the key was still the motebit's
- *      when it signed is not established (or the served chain says it was not).
+ *      when the receipt was issued is not established (or the served chain says
+ *      it was not at the time the receipt claims).
  *   3. Otherwise → `integrity-only`, whatever the verifier reached.
  *
  * And from the chain evidence (cold review F-1 / F-2):
@@ -31,13 +33,24 @@
  *      provably complete (fewer signatures returned than the page limit). A
  *      failed, truncated, or proxy-only scan is `not_established`.
  *
- * A found revocation memo is shown whatever the source — that direction fails
- * closed — but as REPORTED and unauthenticated: the lookup matches the memo
- * text and never checks who signed the transaction, so anyone can post one.
+ *   6. ANY revocation memo found for the signing key is shown, whatever the
+ *      source and whatever its date relative to the receipt's `completed_at`.
+ *      That time is the signer's own claim: a thief holding a retired key can
+ *      date a receipt before the memo, so "the memo came after signing" is not
+ *      evidence of anything. The verifier's `revoked_after_signing` is
+ *      therefore displayed exactly like `revoked`; there is no display value
+ *      for "revoked, but later".
+ *
+ * A found revocation memo fails closed, but as REPORTED and unauthenticated:
+ * the lookup matches the memo text and never checks who signed the
+ * transaction, so anyone can post one.
+ *
+ * Every time the page speaks of is the receipt's CLAIMED time. Issuance time is
+ * never proven here, and the copy says so.
  */
 
 import type { ReceiptDocumentVerification } from "@motebit/state-export-client";
-import type { ServedChainCheck } from "./served-chain.js";
+import type { IdForm, ServedChainCheck } from "./served-chain.js";
 
 /** Who answered the Solana JSON-RPC reads behind the anchor/revocation rungs. */
 export type ChainSource = "operator-proxy" | "independent";
@@ -159,6 +172,8 @@ export interface BindingEvidence {
   readonly keyCommitsToId: boolean;
   /** The page's check of the relay-served chain; absent ⇒ no chain was served or checked. */
   readonly servedChain?: ServedChainCheck;
+  /** How the motebit_id is written (`classifyId`); drives the copy, never the binding. */
+  readonly idForm?: IdForm;
 }
 
 /** Nested receipts and failed integrity: nothing about the key is established. */
@@ -168,8 +183,11 @@ export const NO_BINDING_EVIDENCE: BindingEvidence = { keyCommitsToId: false };
 export type DisplayBinding =
   "revoked" | "key-commitment" | "anchored" | "pinned" | "integrity-only" | "unverified";
 
-export type DisplayRevocation =
-  "not_revoked" | "revoked_after_signing" | "revoked" | "not_established";
+/**
+ * No "revoked after signing": a memo's date is never compared with the
+ * signer-claimed `completed_at` to clear a key (rule 6).
+ */
+export type DisplayRevocation = "not_revoked" | "revoked" | "not_established";
 
 export interface DisplayVerdict {
   readonly integrity: boolean;
@@ -188,6 +206,8 @@ export interface DisplayVerdict {
   readonly chainRoot?: "id-commitment" | "relay-record";
   /** The page's served-chain outcome when it did not bind (the reason, for the copy). */
   readonly chainCheck?: Exclude<ServedChainCheck["kind"], "bound">;
+  /** How the motebit_id is written, when the page classified it. */
+  readonly idForm?: IdForm;
   readonly signerDid?: string;
   readonly motebitId?: string;
   readonly taskId?: string;
@@ -203,7 +223,7 @@ function revocationNotEstablished(
   if (v.revocation === "unknown") {
     return `the on-chain lookup failed${v.revocationDetail ? ` (${v.revocationDetail})` : ""}`;
   }
-  if (v.revocation !== "not_revoked" && v.revocation !== "revoked_after_signing") return null;
+  if (v.revocation !== "not_revoked") return null;
   if (evidence === undefined) return "the source of the on-chain lookup is unknown";
   if (evidence.source === "operator-proxy") {
     return `the on-chain lookup was read ${PROXY_LABEL}`;
@@ -225,10 +245,17 @@ export function assessVerdict(
   const chain = keyEvidence.servedChain;
   const verifierBound =
     v.binding === "sovereign" || v.binding === "pinned" || v.binding === "anchored";
-  if (v.binding === "revoked" || v.binding === "unverified") {
-    shown = v.binding;
+  // Rule 6: a memo found at any date is reported — never cleared by the claimed time.
+  const memoFound =
+    v.revocation === "revoked" ||
+    v.revocation === "revoked_after_signing" ||
+    v.binding === "revoked";
+  if (v.binding === "unverified") {
+    shown = "unverified";
+  } else if (memoFound) {
+    shown = "revoked";
   } else if (chain?.kind === "bound" && verifierBound) {
-    // The page's guardian-free check binds the key at the receipt's time.
+    // The page's guardian-free check binds the key at the receipt's CLAIMED time.
     if (v.binding === "anchored" && evidence?.source === "independent") {
       shown = "anchored";
     } else {
@@ -251,13 +278,16 @@ export function assessVerdict(
   if (shown === "anchored" && v.anchorTxHash !== undefined) out.anchorTxHash = v.anchorTxHash;
   if (anchorViaProxy) out.anchorViaProxy = true;
   if (v.revokedAt !== undefined) out.revokedAt = v.revokedAt;
-  if (v.revocation !== undefined) {
+  if (keyEvidence.idForm !== undefined && v.integrity) out.idForm = keyEvidence.idForm;
+  if (memoFound) {
+    out.revocation = "revoked";
+  } else if (v.revocation !== undefined) {
     const why = revocationNotEstablished(v, evidence);
     if (why !== null) {
       out.revocation = "not_established";
       out.revocationNote = why;
     } else {
-      out.revocation = v.revocation === "unknown" ? "not_established" : v.revocation;
+      out.revocation = v.revocation === "not_revoked" ? "not_revoked" : "not_established";
     }
   }
   if (evidence !== undefined && (v.revocation !== undefined || v.binding === "anchored")) {

@@ -23,7 +23,7 @@ describe("resultLabels", () => {
     expect(l.tone).toBe("bound");
     expect(l.headline).toContain("pinned");
     expect(l.detail).not.toContain(PROXY_LABEL);
-    expect(l.detail).toContain("the identity chain the relay served");
+    expect(l.detail).toContain("the succession chain the relay served");
     expect(l.detail).toContain("commits to no key");
     expect(l.detail).toContain("a later rotation the relay did not serve would not show here");
     expect(l.detail).not.toMatch(/non-equivocable|supplied by you/);
@@ -52,7 +52,7 @@ describe("resultLabels", () => {
     // When a succession check DID run against a served chain, the copy says so.
     const ran = resultLabels(ok({ binding: "key-commitment", chainCheck: "not_active" }));
     expect(ran.detail).toContain("A succession check ran");
-    expect(ran.detail).toContain("not active at the receipt's time");
+    expect(ran.detail).toContain("not active at the time this receipt claims");
     expect(ran.detail).not.toContain("no succession check ran");
   });
 

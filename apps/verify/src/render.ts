@@ -74,8 +74,9 @@ function claimFields(c: ClaimNode): HTMLElement {
   const dl = el("dl", "fields");
   if (c.status !== undefined) dl.append(field("status", c.status));
   if (c.result !== undefined) dl.append(field("result", resultValue(c)));
-  if (c.submitted) dl.append(field("submitted", timeValue(c.submitted)));
-  if (c.completed) dl.append(field("completed", timeValue(c.completed)));
+  // Both times are written by the signer; the label says so.
+  if (c.submitted) dl.append(field("submitted (signer's claim)", timeValue(c.submitted)));
+  if (c.completed) dl.append(field("completed (signer's claim)", timeValue(c.completed)));
   dl.append(field("tools used", c.toolsUsed.length > 0 ? c.toolsUsed.join(", ") : "none", true));
   if (c.memoriesFormed !== undefined) dl.append(field("memories formed", String(c.memoriesFormed)));
   if (c.delegatedScope !== undefined) dl.append(field("delegated scope", c.delegatedScope, true));

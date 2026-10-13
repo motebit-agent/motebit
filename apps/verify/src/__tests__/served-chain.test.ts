@@ -9,6 +9,7 @@ import {
   checkServedChain,
   chainReason,
   idCommitsToKey,
+  classifyId,
   isSelfCertifyingId,
 } from "../served-chain.js";
 import G1 from "./fixtures/G1-genesis-current-chain-served.json?raw";
@@ -127,6 +128,43 @@ describe("checkServedChain", () => {
     expect(await idCommitsToKey(undefined, r(G1).public_key)).toBe(false);
   });
 
+  it("only an exactly canonical id is classified as one; every other form is noncanonical", async () => {
+    const v8 = r(G1).motebit_id;
+    const legacy = r(D5).motebit_id;
+    expect(classifyId(v8)).toBe("uuidv8");
+    expect(classifyId(legacy)).toBe("legacy-uuid");
+    expect(classifyId("3f2a1b4c-5d6e-4f70-8a9b-0c1d2e3f4a5b")).toBe("legacy-uuid");
+    expect(classifyId("did:key:z6MkneMkZqwqRiU5mJzSG3kDwzt9P8C59N4NGTfBLfSGE7c7")).toBe("did:key");
+    for (const id of [
+      `${v8}\u200b`,
+      ` ${v8}`,
+      `${v8} `,
+      v8.toUpperCase(),
+      v8.replace("a", "\u0430"),
+      `\u202e${legacy}`,
+      legacy.toUpperCase(),
+      `urn:uuid:${legacy}`,
+      `{${legacy}}`,
+      legacy.replace(/-/g, ""),
+      "019dc500-0000-1abc-8000-00000000beef",
+      "00000000-0000-0000-0000-000000000000",
+      "DID:KEY:z6MkneMkZqwqRiU5mJzSG3kDwzt9P8C59N4NGTfBLfSGE7c7",
+      "did:key:z6MkneMkZqwqRiU5mJzSG3kDwzt9P8C59N4NGTfBLfSGE7c0",
+      "did:key:",
+      "",
+      42,
+      undefined,
+    ]) {
+      expect(classifyId(id), JSON.stringify(id)).toBe("noncanonical");
+    }
+    // A non-canonical id commits to nothing and binds nothing, whatever is served for it.
+    expect(await idCommitsToKey(v8.toUpperCase(), r(G1).public_key)).toBe(false);
+    const zw = { ...r(G1), motebit_id: `${v8}\u200b` };
+    expect(
+      await checkServedChain(zw, { ...identityOf(G1_CTX), motebit_id: zw.motebit_id }),
+    ).toEqual({ kind: "noncanonical_id" });
+  });
+
   it("every non-binding outcome has a reason clause", () => {
     for (const k of [
       "not_active",
@@ -134,6 +172,7 @@ describe("checkServedChain", () => {
       "recovery_unverifiable",
       "root_mismatch",
       "other_motebit",
+      "noncanonical_id",
       "invalid",
     ] as const) {
       expect(chainReason(k).length).toBeGreaterThan(10);

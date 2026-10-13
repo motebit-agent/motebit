@@ -60,7 +60,7 @@ describe("proofLadder", () => {
       "binding",
     );
     expect(ran.state).toBe("skipped");
-    expect(ran.summary).toContain("does not bind it at the receipt's time");
+    expect(ran.summary).toContain("does not bind it at the time this receipt claims");
     expect(ran.summary).not.toMatch(/no succession check ran|hash of this key/);
   });
 
@@ -102,8 +102,10 @@ describe("proofLadder", () => {
     expect(nested.summary).toContain("nested receipts");
   });
 
-  it("binding: revoked → failed; integrity failure → not checked", () => {
-    expect(rung(proofLadder(v({ binding: "revoked" }), RESOLVED), "binding").state).toBe("failed");
+  it("binding: revoked → not established (—, never ✗); integrity failure → not checked", () => {
+    const rev = rung(proofLadder(v({ binding: "revoked" }), RESOLVED), "binding");
+    expect(rev.state).toBe("skipped");
+    expect(rev.summary).toContain("not established");
     const r = rung(proofLadder(v({ integrity: false, binding: "unverified" }), OFFLINE), "binding");
     expect(r.state).toBe("skipped");
     expect(r.summary).toBe("not checked: integrity failed");
@@ -113,10 +115,6 @@ describe("proofLadder", () => {
     const rev = (over: Partial<DisplayVerdict>, ctx: RelayContext = RESOLVED) =>
       rung(proofLadder(v(over), ctx), "revocation");
     expect(rev({ revocation: "not_revoked" }).state).toBe("passed");
-    const later = rev({ revocation: "revoked_after_signing", revokedAt: 3000 });
-    expect(later.state).toBe("passed");
-    expect(later.summary).toContain("no revocation reported at or before signing");
-    expect(later.summary).toContain("(unauthenticated)");
     const bad = rev({
       binding: "revoked",
       revocation: "revoked",
