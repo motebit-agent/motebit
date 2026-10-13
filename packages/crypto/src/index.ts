@@ -1348,8 +1348,31 @@ export async function verifyKeyBindingAtTime(
   atTimestampMs: number,
   trustedGuardianPublicKeyHex?: string,
 ): Promise<KeyBindingResult> {
-  const chain = identity.succession ?? [];
-  const currentKey = identity.identity.public_key;
+  // Shape first, fail-closed, never a throw: every wrapper (verifyMigratingKeyBinding,
+  // verifyIdentityBindingAnchored, state-export-client's verifyReceiptDocument)
+  // documents "never throws on bad input". A `succession` that is present but not an
+  // array of record objects is unreadable history, so it binds NOTHING — not even the
+  // genesis key: reading it as "no rotations" would bind a key the file's real chain
+  // may have retired. Absent / null is the legitimate "never rotated".
+  const rawChain: unknown = (identity as { succession?: unknown } | null | undefined)?.succession;
+  const currentKey: unknown = (
+    identity as { identity?: { public_key?: unknown } } | null | undefined
+  )?.identity?.public_key;
+  if (
+    (rawChain != null &&
+      (!Array.isArray(rawChain) ||
+        rawChain.some((r) => typeof r !== "object" || r === null || Array.isArray(r)))) ||
+    typeof currentKey !== "string"
+  ) {
+    return {
+      bound: false,
+      reason:
+        typeof currentKey !== "string"
+          ? "identity file has no identity.public_key string; nothing binds"
+          : "succession must be an array of succession records; a malformed chain binds nothing",
+    };
+  }
+  const chain = (rawChain ?? []) as SuccessionRecord[];
   const genesisKey = chain.length > 0 ? chain[0]!.old_public_key : currentKey;
   const genesisCommitment = await verifySovereignBinding(identity.motebit_id, genesisKey);
   // Only a well-formed 32-byte hex key counts as SUPPLIED. `null`, `""` or any

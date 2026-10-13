@@ -383,23 +383,34 @@ export async function verifyReceiptDocument(
       if (receiptAloneSovereign) return { ...view, binding: "sovereign" };
     }
     if (options?.identity) {
+      // The identity file is caller-supplied, often from an untrusted party. The
+      // contract is "never throws on bad input": a rung whose check throws on a
+      // file it cannot read simply does not lift the receipt (fail-closed) — the
+      // ladder continues to the next, weaker rung, and the receipt otherwise stays
+      // at what its own signature proved.
+      const rung = async <T>(check: () => Promise<T | null>): Promise<T | null> => {
+        try {
+          return await check();
+        } catch {
+          return null;
+        }
+      };
+      const identity = options.identity;
       // Sovereign is the strongest root AND fully offline — check it first; a
       // sovereign motebit needs no operator anchor at all.
       // A guardian-recovery link binds only under a caller-trusted guardian
       // (`trustedGuardianPublicKey`); the identity file's own guardian never does.
       const trustedGuardian = options.trustedGuardianPublicKey;
-      const sovereign = await sovereignBinding(parsed, options.identity, trustedGuardian);
+      const sovereign = await rung(() => sovereignBinding(parsed, identity, trustedGuardian));
       if (sovereign) return { ...view, binding: sovereign };
-      if (options.anchor) {
-        const anchored = await anchoredBinding(
-          parsed,
-          options.identity,
-          options.anchor,
-          trustedGuardian,
+      const anchor = options.anchor;
+      if (anchor) {
+        const anchored = await rung(() =>
+          anchoredBinding(parsed, identity, anchor, trustedGuardian),
         );
         if (anchored) return { ...view, binding: "anchored", anchorTxHash: anchored.txHash };
       }
-      const pinned = await pinnedBinding(parsed, options.identity, trustedGuardian);
+      const pinned = await rung(() => pinnedBinding(parsed, identity, trustedGuardian));
       if (pinned) return { ...view, binding: pinned };
     }
   }
