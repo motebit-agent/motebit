@@ -1,10 +1,10 @@
 import { describe, it, expect } from "vitest";
-import type { ReceiptDocumentVerification } from "@motebit/state-export-client";
 import { proofLadder, type RelayContext, type Rung } from "../ladder.js";
+import { PROXY_LABEL, type DisplayVerdict } from "../assess.js";
 
 const OFFLINE: RelayContext = { kind: "offline", reason: "offline — sample" };
 const RESOLVED: RelayContext = { kind: "resolved" };
-const v = (over: Partial<ReceiptDocumentVerification>): ReceiptDocumentVerification => ({
+const v = (over: Partial<DisplayVerdict>): DisplayVerdict => ({
   integrity: true,
   binding: "integrity-only",
   ...over,
@@ -30,8 +30,8 @@ describe("proofLadder", () => {
     expect(failed.summary).toContain("bad sig");
   });
 
-  it("binding: each passed level maps from the verifier's binding", () => {
-    for (const level of ["pinned", "anchored", "sovereign"] as const) {
+  it("binding: pinned and anchored map to a passed level", () => {
+    for (const level of ["pinned", "anchored"] as const) {
       const r = rung(proofLadder(v({ binding: level }), RESOLVED), "binding");
       expect(r.state).toBe("passed");
       expect(r.level).toBe(level);
@@ -42,11 +42,28 @@ describe("proofLadder", () => {
       "binding",
     );
     expect(anchored.summary).toContain("TX");
+    expect(anchored.summary).toContain("independent RPC");
   });
 
-  it("sovereign is stated as a math binding, not trust", () => {
-    const r = rung(proofLadder(v({ binding: "sovereign" }), OFFLINE), "binding");
-    expect(r.summary).toContain("not a statement of trust");
+  it("binding: a key commitment is never ✓ and says rotation and revocation are not established", () => {
+    for (const ctx of [OFFLINE, RESOLVED]) {
+      const r = rung(proofLadder(v({ binding: "key-commitment" }), ctx), "binding");
+      expect(r.state).toBe("skipped");
+      expect(r.level).toBeUndefined();
+      expect(r.summary).toContain(
+        "identity commitment matches the motebit's original key; rotation and revocation not established",
+      );
+      expect(r.summary).not.toMatch(/sovereign/i);
+    }
+  });
+
+  it("binding: pinned with a proxy-read anchor carries the proxy label", () => {
+    const r = rung(
+      proofLadder(v({ binding: "pinned", anchorViaProxy: true }), RESOLVED),
+      "binding",
+    );
+    expect(r.level).toBe("pinned");
+    expect(r.summary).toContain(PROXY_LABEL);
   });
 
   it("binding: integrity-only is never failed and always says why (per context)", () => {
@@ -69,8 +86,8 @@ describe("proofLadder", () => {
     expect(r.summary).toBe("not checked: integrity failed");
   });
 
-  it("revocation: every state maps strictly from the verifier", () => {
-    const rev = (over: Partial<ReceiptDocumentVerification>, ctx: RelayContext = RESOLVED) =>
+  it("revocation: every display state maps strictly", () => {
+    const rev = (over: Partial<DisplayVerdict>, ctx: RelayContext = RESOLVED) =>
       rung(proofLadder(v(over), ctx), "revocation");
     expect(rev({ revocation: "not_revoked" }).state).toBe("passed");
     const later = rev({ revocation: "revoked_after_signing", revokedAt: 3000 });
@@ -79,9 +96,18 @@ describe("proofLadder", () => {
     const bad = rev({ binding: "revoked", revocation: "revoked", revokedAt: 1500 });
     expect(bad.state).toBe("failed");
     expect(bad.summary).toContain("1970-01-01T00:00:01.500Z");
-    const unk = rev({ revocation: "unknown", revocationDetail: "rpc down" });
-    expect(unk.state).toBe("skipped");
-    expect(unk.summary).toContain("rpc down");
+    expect(bad.summary).not.toContain(PROXY_LABEL);
+    const badProxy = rev({
+      binding: "revoked",
+      revocation: "revoked",
+      revokedAt: 1500,
+      chainSource: "operator-proxy",
+    });
+    expect(badProxy.state).toBe("failed");
+    expect(badProxy.summary).toContain(PROXY_LABEL);
+    const ne = rev({ revocation: "not_established", revocationNote: "rpc down" });
+    expect(ne.state).toBe("skipped");
+    expect(ne.summary).toBe("not established: rpc down");
     // Absent ⇒ not checked, never "passed".
     expect(rev({}, OFFLINE).state).toBe("skipped");
     expect(rev({}, OFFLINE).summary).toBe("not checked: offline — sample");

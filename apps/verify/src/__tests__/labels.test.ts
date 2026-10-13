@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
-import type { ReceiptDocumentVerification } from "@motebit/state-export-client";
 import { resultLabels } from "../labels.js";
+import { PROXY_LABEL, type DisplayVerdict } from "../assess.js";
 
-const ok = (over: Partial<ReceiptDocumentVerification> = {}): ReceiptDocumentVerification => ({
+const ok = (over: Partial<DisplayVerdict> = {}): DisplayVerdict => ({
   integrity: true,
   binding: "integrity-only",
   ...over,
@@ -22,25 +22,35 @@ describe("resultLabels", () => {
     const l = resultLabels(ok({ binding: "pinned" }));
     expect(l.tone).toBe("bound");
     expect(l.headline).toContain("pinned");
+    expect(l.detail).not.toContain(PROXY_LABEL);
   });
 
-  it("sovereign is a math binding, offline, no operator — and never reads as trust", () => {
-    const l = resultLabels(ok({ binding: "sovereign" }));
-    expect(l.tone).toBe("bound");
-    expect(l.headline.toLowerCase()).toContain("sovereign");
-    expect(l.detail.toLowerCase()).toContain("no relay or operator");
-    expect(l.detail).toContain("not trust");
+  it("pinned because the anchor was read only via the proxy says so", () => {
+    const l = resultLabels(ok({ binding: "pinned", anchorViaProxy: true }));
+    expect(l.grade).toBe("PINNED");
+    expect(l.detail).toContain(PROXY_LABEL);
+    expect(l.detail).toContain("anchored rung is not claimed");
+  });
+
+  it("a key commitment is lower assurance: integrity tone, never SOVEREIGN, never current authorization", () => {
+    const l = resultLabels(ok({ binding: "key-commitment" }));
+    expect(l.tone).toBe("integrity");
+    expect(l.grade).toBe("KEY COMMITMENT");
+    expect(`${l.grade} ${l.headline} ${l.detail}`).not.toMatch(/sovereign/i);
+    expect(l.headline).toContain("current authorization not established");
+    expect(l.detail).toContain(
+      "identity commitment matches the motebit's original key; rotation and revocation not established",
+    );
     expect(l.detail).toContain("minted a second ago");
-    expect(l.detail).not.toContain("strongest binding");
+    expect(l.detail).toContain("not trust");
   });
 
-  it("anchored claims the strongest binding — on-chain, non-equivocable, tone bound", () => {
+  it("anchored names the independent RPC and does not say 'confirmed on-chain'", () => {
     const l = resultLabels(ok({ binding: "anchored" }));
     expect(l.tone).toBe("bound");
-    expect(l.headline).toContain("anchored on-chain");
-    expect(l.detail).toContain("on-chain");
-    // Non-equivocation, stated in plain language (not the jargon "equivocate").
-    expect(l.detail).toContain("two verifiers different chains");
+    expect(l.grade).toBe("ANCHORED");
+    expect(l.detail).toContain("RPC the operator does not run");
+    expect(l.detail).not.toMatch(/confirmed on-chain/i);
   });
 
   it("revoked is the loudest verdict — failed tone, do-not-trust, even with valid integrity", () => {
@@ -49,6 +59,12 @@ describe("resultLabels", () => {
     expect(l.headline.toLowerCase()).toContain("revoked");
     expect(l.headline.toLowerCase()).toContain("do not trust");
     expect(l.detail.toLowerCase()).toContain("revoked");
+    expect(l.detail).not.toContain(PROXY_LABEL);
+    const viaProxy = resultLabels(
+      ok({ binding: "revoked", revokedAt: 1500, chainSource: "operator-proxy" }),
+    );
+    expect(viaProxy.grade).toBe("REVOKED");
+    expect(viaProxy.detail).toContain(PROXY_LABEL);
   });
 
   it("failed signature reads as altered/forged, not a vague error", () => {

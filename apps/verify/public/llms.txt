@@ -1,15 +1,16 @@
 # receipt.computer
 
-> A public, login-free verifier for Motebit receipts. Paste any signed Motebit artifact — an execution receipt, a tool-invocation receipt, a content manifest — and read its verdict: signature validity and the identity-binding rung (integrity-only → pinned → anchored → sovereign).
+> A public, login-free verifier for Motebit receipts. Paste any signed Motebit artifact — an execution receipt, a tool-invocation receipt, a content manifest — and read its verdict: signature validity and the identity-binding rung (integrity-only, key commitment, pinned, anchored), plus revocation.
 
 receipt.computer is the consumer side of Motebit's self-attesting system: every claim the protocol makes is user-verifiable, offline-first, with no account and no install. Verification is pure — canonical JSON → SHA-256 → Ed25519 — and external anchoring (Solana) is additive evidence, never a gatekeeper.
 
 ## What the rungs mean
 
 - **integrity-only**: the signature verifies against the key embedded in the artifact — the artifact is internally consistent, but the key→identity binding is unproven.
-- **pinned**: the key matches the identity the relay serves for that motebit id.
-- **anchored**: the identity log's Merkle root is committed on-chain (Solana) at a pinned address — the operator cannot equivocate.
-- **sovereign**: the motebit id itself is a cryptographic commitment to the genesis key — the binding holds with no operator in the trust root at all.
+- **key commitment**: the motebit id is a hash commitment to the signing key, so it matches the motebit's original key. Whether that key had been rotated away or revoked when it signed is not established by the page, so this is not shown as a bound identity.
+- **pinned**: the key is time-valid in the identity chain the relay serves for that motebit id.
+- **anchored**: the identity log's Merkle root is found on-chain (Solana) at the relay's pinned address through an RPC the operator does not run. The public page reads Solana through Motebit's RPC proxy, and labels those reads "via Motebit's RPC proxy (not independently confirmed)". It never shows them as anchored or as a revocation ✓.
+- **revocation**: shown as checked only after a complete scan through an independent RPC. A failed, truncated or proxy-only scan reads "not established".
 
 ## Use it
 

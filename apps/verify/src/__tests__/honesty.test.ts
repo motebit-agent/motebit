@@ -2,23 +2,28 @@ import { describe, it, expect } from "vitest";
 import { honesty } from "../honesty.js";
 
 describe("honesty", () => {
-  it("states the three proves and the four limits", () => {
-    const h = honesty({ integrity: true, binding: "sovereign" });
+  it("states the three proves and the limits — a key commitment adds the authorization limit", () => {
+    const h = honesty({ integrity: true, binding: "key-commitment" });
     expect(h.proves).toHaveLength(3);
     expect(h.proves.join(" ")).toContain("held the private key");
     expect(h.proves.join(" ")).toContain("unaltered");
     expect(h.proves[2]).toContain("minted a second ago");
+    expect(h.proves[2]).toContain("original key");
+    expect(h.proves.join(" ")).not.toMatch(/sovereign/i);
     const not = h.doesNotProve.join(" ");
     expect(not).toContain("correct or true");
     expect(not).toContain("operates the agent");
     expect(not).toContain("Reputation or trustworthiness");
-    expect(not).toContain("revocation was not checked");
+    expect(not).toContain("rotation and revocation not established");
+    expect(not).toContain("revocation was not established");
   });
 
-  it("the key-compromise line follows whether revocation was checked", () => {
+  it("the key-compromise line follows whether revocation was established", () => {
     const h = honesty({ integrity: true, binding: "pinned", revocation: "not_revoked" });
     expect(h.doesNotProve.join(" ")).toContain("no revocation was published on-chain");
     expect(h.proves[2]).toContain("pinned");
+    const n = honesty({ integrity: true, binding: "pinned", revocation: "not_established" });
+    expect(n.doesNotProve.join(" ")).toContain("revocation was not established");
   });
 
   it("integrity-only says the id is only a claim; invalid proves nothing", () => {

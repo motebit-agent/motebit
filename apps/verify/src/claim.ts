@@ -9,7 +9,7 @@
  * the correspondence.
  */
 
-import type { ReceiptDocumentVerification } from "@motebit/state-export-client";
+import type { DisplayVerdict } from "./assess.js";
 
 /** Characters of `result` shown before the "show all" expander. */
 export const RESULT_PREVIEW_CHARS = 280;
@@ -36,7 +36,7 @@ export interface ClaimNode {
   readonly delegationCount: number;
   /** This node's own verdict, straight from the verifier's `integrity`. */
   readonly verdict: "valid" | "invalid";
-  readonly view?: ReceiptDocumentVerification;
+  readonly view?: DisplayVerdict;
   readonly delegations: readonly ClaimNode[];
 }
 
@@ -50,7 +50,7 @@ export function claimTime(value: unknown): ClaimTime | undefined {
 const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
 
 /** Map a parsed receipt object + its verification view to the plain-words claim. */
-export function buildClaim(receipt: unknown, view?: ReceiptDocumentVerification): ClaimNode | null {
+export function buildClaim(receipt: unknown, view?: DisplayVerdict): ClaimNode | null {
   if (typeof receipt !== "object" || receipt === null || Array.isArray(receipt)) return null;
   const r = receipt as Record<string, unknown>;
   const result = str(r["result"]);

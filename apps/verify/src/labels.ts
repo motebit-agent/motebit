@@ -1,14 +1,13 @@
 /**
- * Display logic for a verified receipt — maps the honest view model to the
+ * Display logic for a verified receipt — maps the display verdict (`assess.ts`:
+ * the verifier's view, downgraded to what the page's evidence supports) to the
  * words and tone the page shows. Kept pure and separate from `render.ts` (DOM)
- * so the one thing that MUST stay honest — never calling an integrity-only
- * result "verified identity" — is unit-tested.
+ * so the one thing that MUST stay honest — never claiming more than the
+ * evidence — is unit-tested.
  */
 
-import type {
-  ReceiptDocumentVerification,
-  ReceiptDocumentFailureReason,
-} from "@motebit/state-export-client";
+import type { ReceiptDocumentFailureReason } from "@motebit/state-export-client";
+import { PROXY_LABEL, type DisplayVerdict } from "./assess.js";
 
 /** Drives the result card's color treatment. */
 export type ResultTone = "bound" | "integrity" | "failed";
@@ -31,16 +30,17 @@ const FAILURE_DETAIL: Record<ReceiptDocumentFailureReason, string> = {
   unknown: "Verification failed.",
 };
 
-export function resultLabels(v: ReceiptDocumentVerification): ResultLabels {
+export function resultLabels(v: DisplayVerdict): ResultLabels {
   // Revoked is the loudest verdict — the signature may be valid, but the signing
   // key was revoked on-chain at/before this receipt. Check it before everything.
   if (v.binding === "revoked") {
+    const via =
+      v.chainSource === "operator-proxy" ? ` The revocation was read ${PROXY_LABEL}.` : "";
     return {
       tone: "failed",
       grade: "REVOKED",
       headline: "Key revoked — do not trust",
-      detail:
-        "The signature matches, but the signing key was revoked on-chain at or before this receipt's time. A revoked key signals compromise or retirement — do not trust this receipt's identity claim, even though the bytes are intact.",
+      detail: `The signature matches, but the signing key was revoked on-chain at or before this receipt's time. A revoked key signals compromise or retirement — do not trust this receipt's identity claim, even though the bytes are intact.${via}`,
     };
   }
   if (!v.integrity) {
@@ -51,31 +51,36 @@ export function resultLabels(v: ReceiptDocumentVerification): ResultLabels {
       detail: FAILURE_DETAIL[v.reason ?? "unknown"] ?? FAILURE_DETAIL.unknown,
     };
   }
-  if (v.binding === "sovereign") {
+  if (v.binding === "key-commitment") {
+    // The receipt-alone genesis commitment. Lower assurance than any bound rung:
+    // no time-windowed succession check ran, so the page does not claim the key
+    // was still the motebit's when it signed.
     return {
-      tone: "bound",
-      grade: "SOVEREIGN",
-      headline: "Verified — sovereign identity",
+      tone: "integrity",
+      grade: "KEY COMMITMENT",
+      headline: "Signature verified — current authorization not established",
       detail:
-        "The signature is valid and the motebit_id is a hash commitment to the signing key — the id binds to the key by math alone, checked right here with no relay or operator. That is a binding, not trust: a key minted a second ago binds the same way.",
+        "The signature is valid and the receipt is untampered. The motebit_id is a hash commitment to the signing key: identity commitment matches the motebit's original key; rotation and revocation not established — this page did not check whether that key had been rotated away or revoked when it signed. A key minted a second ago commits the same way; this is not trust.",
     };
   }
   if (v.binding === "anchored") {
     return {
       tone: "bound",
       grade: "ANCHORED",
-      headline: "Verified — anchored on-chain",
+      headline: "Verified — anchored",
       detail:
-        "The signature is valid, the signing key is bound to this motebit's identity chain, and that binding is committed in the operator's transparency log whose root is confirmed on-chain. The operator cannot show two verifiers different chains without leaving on-chain-detectable evidence.",
+        "The signature is valid, the signing key is time-valid in this motebit's identity chain, and that binding is committed in the operator's transparency log, whose root was found at the relay's pinned address through a Solana RPC the operator does not run.",
     };
   }
   if (v.binding === "pinned") {
+    const proxy = v.anchorViaProxy
+      ? ` The relay also reports an on-chain anchor for this chain, read ${PROXY_LABEL}, so the anchored rung is not claimed.`
+      : "";
     return {
       tone: "bound",
       grade: "PINNED",
       headline: "Verified — identity pinned",
-      detail:
-        "The signature is valid and the signing key is time-valid in the identity chain checked against — as served by the relay or supplied by you. That binds the key to this motebit's chain — it does not yet prove the chain is the operator's current, non-equivocable record (the anchored rung).",
+      detail: `The signature is valid and the signing key is time-valid in the identity chain checked against — as served by the relay or supplied by you. That binds the key to this motebit's chain — it does not yet prove the chain is the operator's current, non-equivocable record (the anchored rung).${proxy}`,
     };
   }
   // integrity-only: the honest default. Signature is valid, but it was checked
