@@ -18,9 +18,22 @@
  * Fixtures are minted with the real signer from the public demo seeds
  * (rc-review probe/mint.mjs); the relay declaration is signed by a demo key.
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import INDEX_HTML from "../../index.html?raw";
-import DECLARATION from "./fixtures/relay-declaration.json?raw";
+import { describe, it, expect } from "vitest";
+import {
+  FILLER_200,
+  INDEX_HTML,
+  container,
+  grade,
+  installPageHooks,
+  linkHash,
+  openPage,
+  requestLog,
+  rung,
+  settled,
+  showsPositiveVerdict,
+  typeIn,
+  type MockCtx,
+} from "./page-harness.js";
 import A4 from "./fixtures/A4-victim-sovereign.json?raw";
 import C4 from "./fixtures/C4-delegation-null-signed.json?raw";
 import C5 from "./fixtures/C5-delegation-string-signed.json?raw";
@@ -74,137 +87,8 @@ const fixture = (name: string): string => {
   return text;
 };
 const ctxOf = (name: string): MockCtx => JSON.parse(fixture(`${name}.ctx`)) as MockCtx;
-const BODY = /<body>([\s\S]*)<\/body>/
-  .exec(INDEX_HTML)![1]!
-  .replace(/<script[\s\S]*?<\/script>/g, "");
 
-interface MockCtx {
-  readonly bundle?: unknown;
-  readonly memos?: readonly string[];
-  readonly rpcFail?: boolean;
-  readonly relayDown?: boolean;
-}
-
-/** The fixture's receipt as a `#r=` share link (same encoding as fragment.ts). */
-function linkHash(text: string): string {
-  const min = JSON.stringify(JSON.parse(text));
-  let bin = "";
-  for (const b of new TextEncoder().encode(min)) bin += String.fromCharCode(b);
-  return `#r=${btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")}`;
-}
-
-/** 200 newer anchor memos sitting in front of anything older (newest first). */
-const FILLER_200 = Array.from(
-  { length: 200 },
-  (_, i) => `motebit:anchor:v1:${i.toString(16).padStart(64, "0")}:${i + 2}`,
-);
-
-const json = (body: unknown, status = 200): Response =>
-  new Response(typeof body === "string" ? body : JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json" },
-  });
-
-let requests: string[] = [];
-function mockNetwork(ctx: MockCtx): void {
-  requests = [];
-  vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = new URL(
-      typeof input === "string" ? input : input instanceof URL ? input : input.url,
-    );
-    requests.push(`${init?.method ?? "GET"} ${url.origin}${url.pathname}`);
-    if (url.hostname === "relay.motebit.com") {
-      if (ctx.relayDown) throw new TypeError("network down");
-      if (url.pathname === "/.well-known/motebit-transparency.json") return json(DECLARATION);
-      if (url.pathname.startsWith("/api/v1/identity/")) {
-        return ctx.bundle !== undefined ? json(ctx.bundle) : json({ error: "not found" }, 404);
-      }
-      return json({}, 404);
-    }
-    if (init?.method === "POST") {
-      // Any Solana JSON-RPC endpoint: honour getSignaturesForAddress `limit`, newest first.
-      if (ctx.rpcFail) return json("down", 503);
-      const req = JSON.parse(init.body as string) as { params: [string, { limit: number }] };
-      const all = (ctx.memos ?? []).map((m, i) => ({
-        signature: `tx${i}`,
-        slot: 1,
-        err: null,
-        memo: `[1] ${m}`,
-        blockTime: null,
-      }));
-      return json({ jsonrpc: "2.0", id: 1, result: all.slice(0, req.params[1].limit) });
-    }
-    throw new TypeError(`unexpected request ${url.href}`);
-  });
-}
-
-// main.ts registers window listeners (hashchange); drop them between tests so a
-// previous page instance never acts on this one.
-const windowListeners: Array<[string, EventListenerOrEventListenerObject]> = [];
-const realAdd = window.addEventListener.bind(window);
-
-async function openPage(opts: { hash?: string; ctx?: MockCtx; rpc?: string } = {}): Promise<void> {
-  document.body.innerHTML = BODY;
-  history.replaceState(null, "", `/${opts.hash ?? ""}`);
-  mockNetwork(opts.ctx ?? {});
-  if (opts.rpc !== undefined) vi.stubEnv("VITE_SOLANA_RPC_URL", opts.rpc);
-  vi.resetModules();
-  await import("../main.js");
-}
-
-const container = (): HTMLElement => document.getElementById("result-container")!;
-const grade = (): string | null => container().querySelector(".grade-badge")?.textContent ?? null;
-const rung = (key: string): Element | null =>
-  container().querySelector(`.proof > .ladder > [data-rung="${key}"]`);
-
-/** Wait until the page shows a final verdict card or an explicit not-verified state. */
-async function settled(): Promise<void> {
-  await vi.waitFor(
-    () => {
-      const c = container();
-      const done =
-        c.querySelector(".result-card") !== null || /Not verified/.test(c.textContent ?? "");
-      if (!done) throw new Error("not settled");
-    },
-    { timeout: 4000, interval: 20 },
-  );
-  // Let any in-flight run that settled the same tick finish its DOM write.
-  await new Promise((r) => setTimeout(r, 30));
-}
-
-function typeIn(text: string): void {
-  const input = document.getElementById("receipt-input") as HTMLTextAreaElement;
-  input.value = text;
-  input.dispatchEvent(new Event("input"));
-}
-
-/** Anything a positive verdict card shows. */
-function showsPositiveVerdict(): boolean {
-  const c = container();
-  return (
-    c.querySelector(".chip-ok") !== null ||
-    c.querySelector(".tone-bound") !== null ||
-    /SOVEREIGN|ANCHORED|PINNED|valid signature/.test(c.textContent ?? "")
-  );
-}
-
-beforeEach(() => {
-  vi.spyOn(window, "addEventListener").mockImplementation(((
-    type: string,
-    l: EventListenerOrEventListenerObject,
-    o?: boolean | AddEventListenerOptions,
-  ) => {
-    windowListeners.push([type, l]);
-    realAdd(type, l, o);
-  }) as typeof window.addEventListener);
-});
-
-afterEach(() => {
-  for (const [t, l] of windowListeners.splice(0)) window.removeEventListener(t, l);
-  vi.restoreAllMocks();
-  vi.unstubAllGlobals();
-  vi.unstubAllEnvs();
-});
+installPageHooks();
 
 describe("F-3: a previous verdict never outlives the input it was for", () => {
   for (const name of [
@@ -327,9 +211,9 @@ describe("F-2: evidence read only through Motebit's RPC proxy is labelled, never
     const name = "D6a-anchored";
     await openPage({ hash: linkHash(fixture(name)), ctx: ctxOf(name) });
     await settled();
-    expect(requests.some((r) => r.startsWith("POST https://api.motebit.com/v1/solana-rpc"))).toBe(
-      true,
-    );
+    expect(
+      requestLog().some((r) => r.startsWith("POST https://api.motebit.com/v1/solana-rpc")),
+    ).toBe(true);
     expect(grade()).not.toBe("ANCHORED");
     const text = container().textContent ?? "";
     expect(text).not.toMatch(/confirmed on-chain|anchored on-chain|whose root is on-chain/i);
