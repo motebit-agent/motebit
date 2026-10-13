@@ -21,7 +21,9 @@ function bindingLine(v: DisplayVerdict): string {
     case "anchored":
       return "How the key binds to this motebit_id: through the relay's identity log, whose root was found on-chain through an independent RPC (anchored).";
     case "pinned":
-      return "How the key binds to this motebit_id: through the identity chain the relay served (pinned).";
+      return v.chainRoot === "id-commitment"
+        ? "How the key binds to this motebit_id: through the identity chain the relay served (pinned), which roots at the key the id commits to."
+        : "How the key binds to this motebit_id: through the identity chain the relay served (pinned).";
     default:
       return "How the key binds to this motebit_id: it does not — the motebit_id here is only a claim.";
   }
@@ -44,13 +46,22 @@ export function honesty(v: DisplayVerdict): Honesty {
   ];
   if (v.binding === "key-commitment") {
     notProven.push(
-      "That this key was still the motebit's key when it signed — rotation and revocation not established.",
+      v.chainCheck !== undefined
+        ? "That this key was still the motebit's key when it signed — the identity chain the relay served does not bind it at that time."
+        : "That this key was still the motebit's key when it signed — rotation and revocation not established.",
+    );
+  }
+  if (v.binding === "pinned" || v.binding === "anchored") {
+    notProven.push(
+      "That the relay served the whole chain — a later rotation it did not serve would not show here.",
     );
   }
   notProven.push(
-    keyChecked
-      ? "That the key was never stolen — only that no revocation was published on-chain before signing."
-      : "That the key is uncompromised — revocation was not established here.",
+    v.binding === "revoked"
+      ? "That the key was revoked — the revocation memo is unauthenticated; who posted it was not checked."
+      : keyChecked
+        ? "That the key was never stolen — only that no revocation memo dated before signing was found on-chain."
+        : "That the key is uncompromised — revocation was not established here.",
   );
   return {
     proves: [

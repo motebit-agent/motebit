@@ -61,7 +61,11 @@ function resultValue(c: ClaimNode): HTMLElement {
 
 function verdictChip(v: DisplayVerdict | undefined): HTMLElement {
   const ok = v?.integrity === true && v.binding !== "revoked";
-  const text = !v?.integrity ? "INVALID" : v.binding === "revoked" ? "REVOKED" : "valid signature";
+  const text = !v?.integrity
+    ? "INVALID"
+    : v.binding === "revoked"
+      ? "REVOCATION REPORTED"
+      : "valid signature";
   return el("span", `chip ${ok ? "chip-ok" : "chip-fail"}`, text);
 }
 

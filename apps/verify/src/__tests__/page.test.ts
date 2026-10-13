@@ -478,6 +478,7 @@ describe("G: a revocation memo is unauthenticated — reported, never a definiti
       });
       await settled();
       expect(grade()).toBe("REVOCATION REPORTED");
+      expect(container().querySelector(".claim .chip")?.textContent).toBe("REVOCATION REPORTED");
       const text = container().textContent ?? "";
       expect(text).toContain("REVOCATION REPORTED (unauthenticated)");
       expect(text).toContain(sourceText);

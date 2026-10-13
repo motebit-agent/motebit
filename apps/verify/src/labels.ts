@@ -7,7 +7,8 @@
  */
 
 import type { ReceiptDocumentFailureReason } from "@motebit/state-export-client";
-import { PROXY_LABEL, type DisplayVerdict } from "./assess.js";
+import { PROXY_LABEL, sourceLabel, type DisplayVerdict } from "./assess.js";
+import { chainReason } from "./served-chain.js";
 
 /** Drives the result card's color treatment. */
 export type ResultTone = "bound" | "integrity" | "failed";
@@ -31,16 +32,15 @@ const FAILURE_DETAIL: Record<ReceiptDocumentFailureReason, string> = {
 };
 
 export function resultLabels(v: DisplayVerdict): ResultLabels {
-  // Revoked is the loudest verdict — the signature may be valid, but the signing
-  // key was revoked on-chain at/before this receipt. Check it before everything.
+  // A reported revocation is the loudest verdict, and it fails closed — but it
+  // is REPORTED, not proven: the lookup matches the memo's text and never checks
+  // who signed the transaction, so anyone can post one naming any key.
   if (v.binding === "revoked") {
-    const via =
-      v.chainSource === "operator-proxy" ? ` The revocation was read ${PROXY_LABEL}.` : "";
     return {
       tone: "failed",
-      grade: "REVOKED",
-      headline: "Key revoked — do not trust",
-      detail: `The signature matches, but the signing key was revoked on-chain at or before this receipt's time. A revoked key signals compromise or retirement — do not trust this receipt's identity claim, even though the bytes are intact.${via}`,
+      grade: "REVOCATION REPORTED",
+      headline: "REVOCATION REPORTED (unauthenticated) — do not rely on this receipt",
+      detail: `The signature matches, but a memo naming this signing key as revoked, dated at or before this receipt, was found at the relay's anchor address, read ${sourceLabel(v.chainSource)}. The memo is unauthenticated — this page does not check who posted it, and anyone can — so it does not prove the key was revoked. Until the revocation is checked, do not rely on this receipt's identity claim, even though the bytes are intact.`,
     };
   }
   if (!v.integrity) {
@@ -52,15 +52,18 @@ export function resultLabels(v: DisplayVerdict): ResultLabels {
     };
   }
   if (v.binding === "key-commitment") {
-    // The receipt-alone genesis commitment. Lower assurance than any bound rung:
-    // no time-windowed succession check ran, so the page does not claim the key
-    // was still the motebit's when it signed.
+    // The motebit_id is the self-certifying commitment to this very key (its
+    // genesis key). Lower assurance than any bound rung: that arithmetic says
+    // nothing about whether the key was still the motebit's when it signed.
+    const succession =
+      v.chainCheck !== undefined
+        ? `A succession check ran against the identity chain the relay served and did not bind this key at the receipt's time: ${chainReason(v.chainCheck)}.`
+        : "Rotation and revocation not established — no succession check ran, so this page did not check whether that key had been rotated away or revoked when it signed.";
     return {
       tone: "integrity",
       grade: "KEY COMMITMENT",
       headline: "Signature verified — current authorization not established",
-      detail:
-        "The signature is valid and the receipt is untampered. The motebit_id is a hash commitment to the signing key: identity commitment matches the motebit's original key; rotation and revocation not established — this page did not check whether that key had been rotated away or revoked when it signed. A key minted a second ago commits the same way; this is not trust.",
+      detail: `The signature is valid and the receipt is untampered. The motebit_id is the self-certifying commitment to this signing key: identity commitment matches the motebit's original key. ${succession} A key minted a second ago commits the same way; this is not trust.`,
     };
   }
   if (v.binding === "anchored") {
@@ -73,6 +76,12 @@ export function resultLabels(v: DisplayVerdict): ResultLabels {
     };
   }
   if (v.binding === "pinned") {
+    const root =
+      v.chainRoot === "id-commitment"
+        ? ", whose genesis key is the one this motebit_id commits to (checked offline)"
+        : v.chainRoot === "relay-record"
+          ? " (this motebit_id commits to no key, so the chain's root is the relay's record)"
+          : "";
     const proxy = v.anchorViaProxy
       ? ` The relay also reports an on-chain anchor for this chain, read ${PROXY_LABEL}, so the anchored rung is not claimed.`
       : "";
@@ -80,17 +89,20 @@ export function resultLabels(v: DisplayVerdict): ResultLabels {
       tone: "bound",
       grade: "PINNED",
       headline: "Verified — identity pinned",
-      detail: `The signature is valid and the signing key is time-valid in the identity chain checked against — as served by the relay or supplied by you. That binds the key to this motebit's chain — it does not yet prove the chain is the operator's current, non-equivocable record (the anchored rung).${proxy}`,
+      detail: `The signature is valid and the signing key was time-valid at this receipt's time in the identity chain the relay served${root}. That binds the key to this motebit's chain as served — a later rotation the relay did not serve would not show here, and the chain is not shown to be committed in the operator's transparency log (the anchored rung).${proxy}`,
     };
   }
   // integrity-only: the honest default. Signature is valid, but it was checked
   // against the receipt's OWN embedded key — that proves the bytes weren't
   // tampered, NOT that the key belongs to this motebit.
+  const anchor =
+    v.chainCheck !== undefined
+      ? `The identity chain the relay served does not bind this key: ${chainReason(v.chainCheck)}.`
+      : "No trust anchor was provided.";
   return {
     tone: "integrity",
     grade: "INTEGRITY ONLY",
     headline: "Signature verified — identity not anchored",
-    detail:
-      "The signature is valid and the receipt is untampered, but it was checked against the receipt's own embedded key. That proves integrity, not that the key belongs to this motebit. No trust anchor was provided.",
+    detail: `The signature is valid and the receipt is untampered, but it was checked against the receipt's own embedded key. That proves integrity, not that the key belongs to this motebit. ${anchor}`,
   };
 }

@@ -92,13 +92,14 @@ describe("renderResult", () => {
     expect(p.textContent).not.toMatch(/valid|SOVEREIGN|PINNED|ANCHORED/);
   });
 
-  it("revoked → failed tone, REVOKED grade + chip, revocation rung ✗", () => {
+  it("revocation memo → failed tone, REVOCATION REPORTED grade + chip, revocation rung ✗", () => {
     const el = renderResult(view({ binding: "revoked", revokedAt: 1500, revocation: "revoked" }), {
       receipt,
       ctx: { kind: "resolved" },
     });
-    expect(el.querySelector(".grade-badge")?.textContent).toBe("REVOKED");
-    expect(el.querySelector(".claim .chip")?.textContent).toBe("REVOKED");
+    expect(el.querySelector(".grade-badge")?.textContent).toBe("REVOCATION REPORTED");
+    expect(el.querySelector(".claim .chip")?.textContent).toBe("REVOCATION REPORTED");
+    expect(el.querySelector(".chip-ok")).toBeNull();
     expect(el.querySelector('[data-rung="revocation"] .check-mark.fail')).not.toBeNull();
   });
 

@@ -12,9 +12,12 @@
  * minted receipts are demo keys no relay knows, so they stay offline.
  *
  * What is SHOWN is the display verdict (`assess.ts`), never the raw view: the
- * receipt-alone genesis commitment is a key commitment (not sovereign), and
- * chain reads through Motebit's RPC proxy, or a revocation scan that stopped at
- * the page limit, never show as anchored or as a revocation ✓. Any input change
+ * identity binding comes from the page's own check of the relay-served chain
+ * (`served-chain.ts`, no file-named guardian honoured) — PINNED when it binds
+ * the key at the receipt's time, a key commitment when only the id's own
+ * arithmetic does, never SOVEREIGN — and chain reads through Motebit's RPC
+ * proxy, or a revocation scan that stopped at the page limit, never show as
+ * anchored or as a revocation ✓. Any input change
  * clears the previous verdict at once; a verifier exception renders an explicit
  * "Not verified" state.
  */
@@ -29,8 +32,11 @@ import {
   classifyRpc,
   observeSignatureScans,
   scansComplete,
+  NO_BINDING_EVIDENCE,
+  type BindingEvidence,
   type ChainEvidence,
 } from "./assess.js";
+import { checkServedChain, idCommitsToKey } from "./served-chain.js";
 import { resolveReceiptBinding } from "./relay-binding.js";
 import type { RelayContext } from "./ladder.js";
 import { SAMPLE_JSON, tamperResult } from "./sample.js";
@@ -149,6 +155,14 @@ async function verifyAndRender(text: string, seq: number, src: Source): Promise<
   let view: ReceiptDocumentVerification = await verifyReceiptDocument(text);
   let ctx: RelayContext;
   let evidence: ChainEvidence | undefined;
+  const receipt = (typeof parsed === "object" && parsed !== null ? parsed : {}) as {
+    motebit_id?: unknown;
+    public_key?: unknown;
+    completed_at?: unknown;
+  };
+  let keyEvidence: BindingEvidence = view.integrity
+    ? { keyCommitsToId: await idCommitsToKey(receipt.motebit_id, receipt.public_key) }
+    : NO_BINDING_EVIDENCE;
   if (src === "sample" || src === "tampered-sample") {
     ctx = offline("offline — the sample is verified in this tab, with no relay context");
   } else if (src === "minted") {
@@ -179,6 +193,10 @@ async function verifyAndRender(text: string, seq: number, src: Source): Promise<
         source: SOLANA_RPC_SOURCE,
         revocationScanComplete: scansComplete(revocationScan.scans),
       };
+      keyEvidence = {
+        ...keyEvidence,
+        servedChain: await checkServedChain(receipt, resolved.identity),
+      };
       ctx = { kind: "resolved" };
     } else {
       ctx = {
@@ -189,7 +207,7 @@ async function verifyAndRender(text: string, seq: number, src: Source): Promise<
   }
   if (seq !== runSeq) return; // a newer edit superseded this run
   resultContainer.replaceChildren(
-    renderResult(assessVerdict(view, evidence), { receipt: parsed, ctx }),
+    renderResult(assessVerdict(view, evidence, keyEvidence), { receipt: parsed, ctx }),
   );
 }
 

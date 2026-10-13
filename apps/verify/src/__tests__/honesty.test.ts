@@ -20,10 +20,23 @@ describe("honesty", () => {
 
   it("the key-compromise line follows whether revocation was established", () => {
     const h = honesty({ integrity: true, binding: "pinned", revocation: "not_revoked" });
-    expect(h.doesNotProve.join(" ")).toContain("no revocation was published on-chain");
+    expect(h.doesNotProve.join(" ")).toContain("no revocation memo dated before signing was found");
+    expect(h.doesNotProve.join(" ")).toContain("served the whole chain");
     expect(h.proves[2]).toContain("pinned");
     const n = honesty({ integrity: true, binding: "pinned", revocation: "not_established" });
     expect(n.doesNotProve.join(" ")).toContain("revocation was not established");
+  });
+
+  it("a key commitment whose served chain did not bind says so, not 'not established'", () => {
+    const h = honesty({ integrity: true, binding: "key-commitment", chainCheck: "not_active" });
+    const not = h.doesNotProve.join(" ");
+    expect(not).toContain("the identity chain the relay served does not bind it at that time");
+    expect(not).not.toContain("rotation and revocation not established");
+  });
+
+  it("a reported revocation is not proof of revocation", () => {
+    const h = honesty({ integrity: true, binding: "revoked", revocation: "revoked" });
+    expect(h.doesNotProve.join(" ")).toContain("the revocation memo is unauthenticated");
   });
 
   it("integrity-only says the id is only a claim; invalid proves nothing", () => {

@@ -1,6 +1,7 @@
 /**
  * Tamper check for the receipt.computer overclaim mitigation (cold review F-1,
- * F-2, F-3). Each entry reverts ONE fix point and names the tests that must go
+ * F-2, F-3; round 2: B served-chain binding, D truthful copy, G unauthenticated
+ * revocation). Each entry reverts ONE fix point and names the tests that must go
  * red. The script applies the tamper, runs those tests, demands a non-zero exit,
  * and restores the file. An entry whose `find` text is not present exactly once
  * is a hard error — a tamper that silently fails to apply would be a false green.
@@ -37,11 +38,113 @@ const TAMPERS = [
     tests: ["src/__tests__/page.test.ts", "-t", "hashchange"],
   },
   {
-    name: "F-1: receipt-alone sovereign passes through instead of becoming a key commitment",
+    name: "F-1: the verifier's sovereign passes through to the page",
     file: "src/assess.ts",
-    find: '    case "sovereign":\n      binding = "key-commitment";\n      break;\n',
-    replace: "",
+    find: '  if (v.binding === "revoked" || v.binding === "unverified") {',
+    replace:
+      '  if (v.binding === "revoked" || v.binding === "unverified" || v.binding === "sovereign") {',
     tests: ["src/__tests__/page.test.ts", "-t", "SOVEREIGN"],
+  },
+  {
+    name: "B: a served chain that binds the key no longer lifts the page to PINNED",
+    file: "src/assess.ts",
+    find: '  } else if (chain?.kind === "bound" && verifierBound) {',
+    replace: "  } else if (false) {",
+    tests: ["src/__tests__/page.test.ts", "-t", "PINNED, not KEY COMMITMENT"],
+  },
+  {
+    name: "B: the page stops checking the served chain itself",
+    file: "src/main.ts",
+    find: "        servedChain: await checkServedChain(receipt, resolved.identity),\n",
+    replace: "",
+    tests: ["src/__tests__/page.test.ts", "-t", "PINNED, not KEY COMMITMENT"],
+  },
+  {
+    name: "B: the page check hands the file-named guardian to the verifier",
+    file: "src/served-chain.ts",
+    find: "verifyKeyBindingAtTime(withoutGuardian, key, at)",
+    replace: "verifyKeyBindingAtTime(identity, key, at)",
+    tests: ["src/__tests__/page.test.ts", "-t", "guardian named only"],
+  },
+  {
+    name: "B: a self-certifying id no longer has to root the served chain at its own key",
+    file: "src/served-chain.ts",
+    find: "        return r.sovereign === true\n",
+    replace: "        return true\n",
+    tests: ["src/__tests__/page.test.ts", "-t", "genesis is not the key"],
+  },
+  {
+    name: "B: the verifier's pinned/anchored passes through without the page's chain check",
+    file: "src/assess.ts",
+    find: '  } else if (chain?.kind === "bound" && verifierBound) {',
+    replace:
+      '  } else if ((chain?.kind === "bound" || v.binding === "pinned" || v.binding === "anchored") && verifierBound) {',
+    tests: ["src/__tests__/page.test.ts", "-t", "same forged guardian on a legacy id"],
+  },
+  {
+    name: "B/D: KEY COMMITMENT shown without the id committing to the signing key",
+    file: "src/assess.ts",
+    find: '  } else if (keyEvidence.keyCommitsToId && v.binding === "sovereign") {',
+    replace: '  } else if (v.binding === "sovereign") {',
+    tests: ["src/__tests__/page.test.ts", "-t", "guardian named only"],
+  },
+  {
+    name: "D: the served-chain outcome is dropped, so the copy says no succession check ran",
+    file: "src/assess.ts",
+    find: '  if (chain !== undefined && chain.kind !== "bound" && v.integrity) out.chainCheck = chain.kind;\n',
+    replace: "",
+    tests: [
+      "src/__tests__/page.test.ts",
+      "-t",
+      "retired genesis key signing after rotation → KEY COMMITMENT",
+    ],
+  },
+  {
+    name: "D: the binding rung claims 'no succession check ran' after one ran",
+    file: "src/ladder.ts",
+    find: "          v.chainCheck !== undefined\n            ? `not bound",
+    replace: "          false\n            ? `not bound",
+    tests: [
+      "src/__tests__/page.test.ts",
+      "-t",
+      "retired genesis key signing after rotation → KEY COMMITMENT",
+    ],
+  },
+  {
+    name: "D: the PINNED copy calls the served chain non-equivocable",
+    file: "src/labels.ts",
+    find: "and the chain is not shown to be committed in the operator's transparency log (the anchored rung).",
+    replace:
+      "it does not yet prove the chain is the operator's current, non-equivocable record (the anchored rung).",
+    tests: ["src/__tests__/page.test.ts", "-t", "PINNED, not KEY COMMITMENT"],
+  },
+  {
+    name: "G: an unauthenticated revocation memo is graded REVOKED",
+    file: "src/labels.ts",
+    find: '      grade: "REVOCATION REPORTED",',
+    replace: '      grade: "REVOKED",',
+    tests: ["src/__tests__/page.test.ts", "-t", "third-party memo"],
+  },
+  {
+    name: "G: the verdict headline says 'Key revoked'",
+    file: "src/labels.ts",
+    find: '      headline: "REVOCATION REPORTED (unauthenticated) — do not rely on this receipt",',
+    replace: '      headline: "Key revoked — do not trust",',
+    tests: ["src/__tests__/page.test.ts", "-t", "third-party memo"],
+  },
+  {
+    name: "G: the revocation rung states 'revoked on-chain at' as fact",
+    file: "src/ladder.ts",
+    find: "      summary: `REVOCATION REPORTED (unauthenticated) — ${when}; who posted it was not checked — read ${sourceLabel(v.chainSource)}`,",
+    replace: "      summary: `revoked on-chain at ${when}`,",
+    tests: ["src/__tests__/page.test.ts", "-t", "third-party memo"],
+  },
+  {
+    name: "G: the claim chip says REVOKED",
+    file: "src/render.ts",
+    find: '      ? "REVOCATION REPORTED"\n      : "valid signature";',
+    replace: '      ? "REVOKED"\n      : "valid signature";',
+    tests: ["src/__tests__/page.test.ts", "-t", "third-party memo"],
   },
   {
     name: "F-1: a truncated revocation scan is no longer refused",
@@ -74,8 +177,8 @@ const TAMPERS = [
   {
     name: "F-2: a proxy-read anchor renders ANCHORED",
     file: "src/assess.ts",
-    find: '      if (evidence?.source === "independent") {',
-    replace: "      if (true) {",
+    find: '    if (v.binding === "anchored" && evidence?.source === "independent") {',
+    replace: '    if (v.binding === "anchored") {',
     tests: ["src/__tests__/page.test.ts", "-t", "operator proxy: an anchor"],
   },
   {

@@ -18,11 +18,18 @@ describe("resultLabels", () => {
     expect(l.headline.toLowerCase()).not.toContain("identity anchored");
   });
 
-  it("pinned claims identity (against supplied material), tone bound", () => {
-    const l = resultLabels(ok({ binding: "pinned" }));
+  it("pinned claims identity against the chain the relay served, tone bound — never 'non-equivocable' or 'supplied by you'", () => {
+    const l = resultLabels(ok({ binding: "pinned", chainRoot: "relay-record" }));
     expect(l.tone).toBe("bound");
     expect(l.headline).toContain("pinned");
     expect(l.detail).not.toContain(PROXY_LABEL);
+    expect(l.detail).toContain("the identity chain the relay served");
+    expect(l.detail).toContain("commits to no key");
+    expect(l.detail).toContain("a later rotation the relay did not serve would not show here");
+    expect(l.detail).not.toMatch(/non-equivocable|supplied by you/);
+    const sov = resultLabels(ok({ binding: "pinned", chainRoot: "id-commitment" }));
+    expect(sov.detail).toContain("whose genesis key is the one this motebit_id commits to");
+    expect(sov.detail).not.toMatch(/sovereign/i);
   });
 
   it("pinned because the anchor was read only via the proxy says so", () => {
@@ -38,11 +45,21 @@ describe("resultLabels", () => {
     expect(l.grade).toBe("KEY COMMITMENT");
     expect(`${l.grade} ${l.headline} ${l.detail}`).not.toMatch(/sovereign/i);
     expect(l.headline).toContain("current authorization not established");
-    expect(l.detail).toContain(
-      "identity commitment matches the motebit's original key; rotation and revocation not established",
-    );
+    expect(l.detail).toContain("identity commitment matches the motebit's original key");
+    expect(l.detail).toContain("no succession check ran");
     expect(l.detail).toContain("minted a second ago");
     expect(l.detail).toContain("not trust");
+    // When a succession check DID run against a served chain, the copy says so.
+    const ran = resultLabels(ok({ binding: "key-commitment", chainCheck: "not_active" }));
+    expect(ran.detail).toContain("A succession check ran");
+    expect(ran.detail).toContain("not active at the receipt's time");
+    expect(ran.detail).not.toContain("no succession check ran");
+  });
+
+  it("integrity-only with a served chain names why the chain did not bind", () => {
+    const l = resultLabels(ok({ chainCheck: "recovery_unverifiable" }));
+    expect(l.detail).toContain("guardian-recovery link");
+    expect(l.detail).not.toContain("No trust anchor was provided");
   });
 
   it("anchored names the independent RPC and does not say 'confirmed on-chain'", () => {
@@ -53,17 +70,21 @@ describe("resultLabels", () => {
     expect(l.detail).not.toMatch(/confirmed on-chain/i);
   });
 
-  it("revoked is the loudest verdict — failed tone, do-not-trust, even with valid integrity", () => {
-    const l = resultLabels(ok({ binding: "revoked", revokedAt: 1500 }));
+  it("a revocation memo is the loudest verdict, failed tone — but REPORTED (unauthenticated), never 'Key revoked'", () => {
+    const l = resultLabels(ok({ binding: "revoked", revokedAt: 1500, chainSource: "independent" }));
     expect(l.tone).toBe("failed");
-    expect(l.headline.toLowerCase()).toContain("revoked");
-    expect(l.headline.toLowerCase()).toContain("do not trust");
-    expect(l.detail.toLowerCase()).toContain("revoked");
+    expect(l.grade).toBe("REVOCATION REPORTED");
+    expect(l.headline).toContain("REVOCATION REPORTED (unauthenticated)");
+    expect(l.headline).toContain("do not rely");
+    expect(l.headline).not.toMatch(/Key revoked/);
+    expect(l.detail).toContain("unauthenticated");
+    expect(l.detail).toContain("does not prove the key was revoked");
+    expect(l.detail).toContain("through an RPC the operator does not run");
     expect(l.detail).not.toContain(PROXY_LABEL);
     const viaProxy = resultLabels(
       ok({ binding: "revoked", revokedAt: 1500, chainSource: "operator-proxy" }),
     );
-    expect(viaProxy.grade).toBe("REVOKED");
+    expect(viaProxy.grade).toBe("REVOCATION REPORTED");
     expect(viaProxy.detail).toContain(PROXY_LABEL);
   });
 

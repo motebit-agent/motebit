@@ -7,10 +7,10 @@ receipt.computer is the consumer side of Motebit's self-attesting system: every 
 ## What the rungs mean
 
 - **integrity-only**: the signature verifies against the key embedded in the artifact — the artifact is internally consistent, but the key→identity binding is unproven.
-- **key commitment**: the motebit id is a hash commitment to the signing key, so it matches the motebit's original key. Whether that key had been rotated away or revoked when it signed is not established by the page, so this is not shown as a bound identity.
-- **pinned**: the key is time-valid in the identity chain the relay serves for that motebit id.
+- **key commitment**: the motebit id is the self-certifying commitment to the signing key (its original key), and no identity chain the page checked binds that key at the receipt's time — either none was checked, or the one the relay served does not (the page says which). Not shown as a bound identity.
+- **pinned**: the page's own check finds the key time-valid at the receipt's time in the identity chain the relay serves for that motebit id; for a self-certifying id, that chain must root at the key the id commits to. A guardian-recovery link is not honoured, because the only source of its guardian key is the relay's own record. The window is only as complete as the chain served: a later rotation the relay did not serve would not show.
 - **anchored**: the identity log's Merkle root is found on-chain (Solana) at the relay's pinned address through an RPC the operator does not run. The public page reads Solana through Motebit's RPC proxy, and labels those reads "via Motebit's RPC proxy (not independently confirmed)". It never shows them as anchored or as a revocation ✓.
-- **revocation**: shown as checked only after a complete scan through an independent RPC. A failed, truncated or proxy-only scan reads "not established".
+- **revocation**: shown as checked only after a complete scan through an independent RPC. A failed, truncated or proxy-only scan reads "not established". A revocation memo found for the key is shown as "REVOCATION REPORTED (unauthenticated)" with where it was read: the page does not check who posted the memo, so it fails closed without claiming the key was revoked.
 
 ## Use it
 

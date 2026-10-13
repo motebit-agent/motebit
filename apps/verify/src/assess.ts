@@ -5,32 +5,52 @@
  * `ReceiptDocumentVerification`, so a claim stronger than its evidence is not a
  * value the renderers can be handed.
  *
- * Three downgrades (receipt.computer cold review, F-1 / F-2):
+ * Identity binding is decided from the page's OWN evidence (`BindingEvidence`),
+ * not from the verifier's `binding: "sovereign"` — that one value covers both
+ * the receipt-alone commitment and the time-windowed succession path, and the
+ * latter trusts a guardian named inside the served file (`served-chain.ts`):
  *
- *   1. The receipt-alone genesis commitment (`binding: "sovereign"` — the
- *      motebit_id is a hash of the signing key) is shown as `key-commitment`:
- *      integrity holds and the id commits to the motebit's ORIGINAL key, but no
- *      time-windowed succession check ran, so whether that key was rotated away
- *      or revoked when it signed is not established. Never SOVEREIGN.
- *   2. `anchored` stands only when the on-chain root was read through an RPC
+ *   1. The relay-served chain binds the signing key at the receipt's time
+ *      (checked by the page with no guardian link honoured) → `pinned`, or
+ *      `anchored` when the verifier also reached anchored on independent
+ *      evidence. Never SOVEREIGN: the time window is only as complete as the
+ *      chain the relay chose to serve.
+ *   2. No served chain binds it, but the motebit_id is the self-certifying
+ *      commitment to the signing key → `key-commitment`: integrity holds and
+ *      the id commits to this key, but whether the key was still the motebit's
+ *      when it signed is not established (or the served chain says it was not).
+ *   3. Otherwise → `integrity-only`, whatever the verifier reached.
+ *
+ * And from the chain evidence (cold review F-1 / F-2):
+ *
+ *   4. `anchored` stands only when the on-chain root was read through an RPC
  *      the operator does not run. Read via Motebit's RPC proxy, it is shown as
  *      `pinned` with the anchor labelled "via Motebit's RPC proxy (not
  *      independently confirmed)".
- *   3. Revocation is ✓ only when the scan came from an independent RPC AND is
+ *   5. Revocation is ✓ only when the scan came from an independent RPC AND is
  *      provably complete (fewer signatures returned than the page limit). A
  *      failed, truncated, or proxy-only scan is `not_established`.
  *
- * A found revocation (the poison verdict) is shown whatever the source — that
- * direction fails closed — but a proxy source is still labelled.
+ * A found revocation memo is shown whatever the source — that direction fails
+ * closed — but as REPORTED and unauthenticated: the lookup matches the memo
+ * text and never checks who signed the transaction, so anyone can post one.
  */
 
 import type { ReceiptDocumentVerification } from "@motebit/state-export-client";
+import type { ServedChainCheck } from "./served-chain.js";
 
 /** Who answered the Solana JSON-RPC reads behind the anchor/revocation rungs. */
 export type ChainSource = "operator-proxy" | "independent";
 
 /** The exact provenance label for anything read through the operator's proxy. */
 export const PROXY_LABEL = "via Motebit's RPC proxy (not independently confirmed)";
+
+/** Where a chain read (e.g. a revocation memo) came from, as the copy states it. */
+export function sourceLabel(source: ChainSource | undefined): string {
+  if (source === "operator-proxy") return PROXY_LABEL;
+  if (source === "independent") return "through an RPC the operator does not run";
+  return "from an unrecorded source";
+}
 
 /**
  * Classify an RPC URL. Hosts the operator runs (motebit.com, receipt.computer
@@ -133,6 +153,17 @@ export interface ChainEvidence {
   readonly revocationScanComplete: boolean;
 }
 
+/** What the page itself established about the key ↔ motebit_id relation. */
+export interface BindingEvidence {
+  /** The motebit_id is the self-certifying commitment to the receipt's signing key. */
+  readonly keyCommitsToId: boolean;
+  /** The page's check of the relay-served chain; absent ⇒ no chain was served or checked. */
+  readonly servedChain?: ServedChainCheck;
+}
+
+/** Nested receipts and failed integrity: nothing about the key is established. */
+export const NO_BINDING_EVIDENCE: BindingEvidence = { keyCommitsToId: false };
+
 /** The binding the page may show. There is no "sovereign" here by design. */
 export type DisplayBinding =
   "revoked" | "key-commitment" | "anchored" | "pinned" | "integrity-only" | "unverified";
@@ -153,6 +184,10 @@ export interface DisplayVerdict {
   readonly chainSource?: ChainSource;
   /** The verifier reached `anchored`, but only through the operator proxy. */
   readonly anchorViaProxy?: boolean;
+  /** `pinned`/`anchored`: whether the served chain roots at the key the id commits to. */
+  readonly chainRoot?: "id-commitment" | "relay-record";
+  /** The page's served-chain outcome when it did not bind (the reason, for the copy). */
+  readonly chainCheck?: Exclude<ServedChainCheck["kind"], "bound">;
   readonly signerDid?: string;
   readonly motebitId?: string;
   readonly taskId?: string;
@@ -182,31 +217,38 @@ function revocationNotEstablished(
 /** Map the verifier's view + the page's evidence to the claim the page may show. */
 export function assessVerdict(
   v: ReceiptDocumentVerification,
-  evidence?: ChainEvidence,
+  evidence: ChainEvidence | undefined,
+  keyEvidence: BindingEvidence,
 ): DisplayVerdict {
-  let binding: DisplayBinding;
+  let shown: DisplayBinding;
   let anchorViaProxy = false;
-  switch (v.binding) {
-    case "sovereign":
-      binding = "key-commitment";
-      break;
-    case "anchored":
-      if (evidence?.source === "independent") {
-        binding = "anchored";
-      } else {
-        binding = "pinned";
-        anchorViaProxy = true;
-      }
-      break;
-    default:
-      binding = v.binding;
+  const chain = keyEvidence.servedChain;
+  const verifierBound =
+    v.binding === "sovereign" || v.binding === "pinned" || v.binding === "anchored";
+  if (v.binding === "revoked" || v.binding === "unverified") {
+    shown = v.binding;
+  } else if (chain?.kind === "bound" && verifierBound) {
+    // The page's guardian-free check binds the key at the receipt's time.
+    if (v.binding === "anchored" && evidence?.source === "independent") {
+      shown = "anchored";
+    } else {
+      shown = "pinned";
+      anchorViaProxy = v.binding === "anchored";
+    }
+  } else if (keyEvidence.keyCommitsToId && v.binding === "sovereign") {
+    shown = "key-commitment";
+  } else {
+    shown = "integrity-only";
   }
-
   const out: { -readonly [K in keyof DisplayVerdict]: DisplayVerdict[K] } = {
     integrity: v.integrity,
-    binding,
+    binding: shown,
   };
-  if (binding === "anchored" && v.anchorTxHash !== undefined) out.anchorTxHash = v.anchorTxHash;
+  if ((shown === "pinned" || shown === "anchored") && chain?.kind === "bound") {
+    out.chainRoot = chain.root;
+  }
+  if (chain !== undefined && chain.kind !== "bound" && v.integrity) out.chainCheck = chain.kind;
+  if (shown === "anchored" && v.anchorTxHash !== undefined) out.anchorTxHash = v.anchorTxHash;
   if (anchorViaProxy) out.anchorViaProxy = true;
   if (v.revokedAt !== undefined) out.revokedAt = v.revokedAt;
   if (v.revocation !== undefined) {
@@ -226,6 +268,7 @@ export function assessVerdict(
   if (v.taskId !== undefined) out.taskId = v.taskId;
   if (v.reason !== undefined) out.reason = v.reason;
   if (v.detail !== undefined) out.detail = v.detail;
-  if (v.delegations !== undefined) out.delegations = v.delegations.map((d) => assessVerdict(d));
+  if (v.delegations !== undefined)
+    out.delegations = v.delegations.map((d) => assessVerdict(d, undefined, NO_BINDING_EVIDENCE));
   return out;
 }

@@ -55,6 +55,27 @@ describe("proofLadder", () => {
       );
       expect(r.summary).not.toMatch(/sovereign/i);
     }
+    const ran = rung(
+      proofLadder(v({ binding: "key-commitment", chainCheck: "not_active" }), RESOLVED),
+      "binding",
+    );
+    expect(ran.state).toBe("skipped");
+    expect(ran.summary).toContain("does not bind it at the receipt's time");
+    expect(ran.summary).not.toMatch(/no succession check ran|hash of this key/);
+  });
+
+  it("binding: pinned states the chain root and never 'sovereign'", () => {
+    const sov = rung(
+      proofLadder(v({ binding: "pinned", chainRoot: "id-commitment" }), RESOLVED),
+      "binding",
+    );
+    expect(sov.summary).toContain("roots at the key this motebit_id commits to");
+    const leg = rung(
+      proofLadder(v({ binding: "pinned", chainRoot: "relay-record" }), RESOLVED),
+      "binding",
+    );
+    expect(leg.summary).toContain("the root is the relay's record");
+    expect(`${sov.summary} ${leg.summary}`).not.toMatch(/sovereign/i);
   });
 
   it("binding: pinned with a proxy-read anchor carries the proxy label", () => {
@@ -75,6 +96,8 @@ describe("proofLadder", () => {
     expect(un.summary).toContain("relay down");
     const res = rung(proofLadder(v({}), RESOLVED), "binding");
     expect(res.summary).toContain("does not bind this key");
+    const fg = rung(proofLadder(v({ chainCheck: "recovery_unverifiable" }), RESOLVED), "binding");
+    expect(fg.summary).toContain("guardian-recovery link");
     const nested = rung(proofLadder(v({}), { kind: "nested" }), "binding");
     expect(nested.summary).toContain("nested receipts");
   });
@@ -92,10 +115,19 @@ describe("proofLadder", () => {
     expect(rev({ revocation: "not_revoked" }).state).toBe("passed");
     const later = rev({ revocation: "revoked_after_signing", revokedAt: 3000 });
     expect(later.state).toBe("passed");
-    expect(later.summary).toContain("revoked later");
-    const bad = rev({ binding: "revoked", revocation: "revoked", revokedAt: 1500 });
+    expect(later.summary).toContain("no revocation reported at or before signing");
+    expect(later.summary).toContain("(unauthenticated)");
+    const bad = rev({
+      binding: "revoked",
+      revocation: "revoked",
+      revokedAt: 1500,
+      chainSource: "independent",
+    });
     expect(bad.state).toBe("failed");
     expect(bad.summary).toContain("1970-01-01T00:00:01.500Z");
+    expect(bad.summary).toContain("REVOCATION REPORTED (unauthenticated)");
+    expect(bad.summary).toContain("through an RPC the operator does not run");
+    expect(bad.summary).not.toMatch(/revoked on-chain/);
     expect(bad.summary).not.toContain(PROXY_LABEL);
     const badProxy = rev({
       binding: "revoked",

@@ -6,6 +6,9 @@ import {
   observeSignatureScans,
   scansComplete,
   PROXY_LABEL,
+  NO_BINDING_EVIDENCE,
+  sourceLabel,
+  type BindingEvidence,
   type ChainEvidence,
 } from "../assess.js";
 
@@ -20,6 +23,16 @@ const INDEPENDENT_TRUNCATED: ChainEvidence = {
   revocationScanComplete: false,
 };
 const PROXY_COMPLETE: ChainEvidence = { source: "operator-proxy", revocationScanComplete: true };
+const NONE = NO_BINDING_EVIDENCE;
+const COMMITS: BindingEvidence = { keyCommitsToId: true };
+const BOUND_ID: BindingEvidence = {
+  keyCommitsToId: false,
+  servedChain: { kind: "bound", root: "id-commitment" },
+};
+const BOUND_RELAY: BindingEvidence = {
+  keyCommitsToId: false,
+  servedChain: { kind: "bound", root: "relay-record" },
+};
 
 describe("classifyRpc", () => {
   it("operator hosts and garbage are the proxy; anything else is independent", () => {
@@ -33,60 +46,117 @@ describe("classifyRpc", () => {
 });
 
 describe("assessVerdict", () => {
-  it("receipt-alone sovereign is always a key commitment, whatever the evidence", () => {
+  it("never SOVEREIGN: the verifier's sovereign is pinned when the page's chain check binds, else a key commitment only when the id commits to the key", () => {
     for (const ev of [undefined, INDEPENDENT_COMPLETE, PROXY_COMPLETE]) {
-      expect(assessVerdict(v({ binding: "sovereign" }), ev).binding).toBe("key-commitment");
+      const sov = v({ binding: "sovereign" });
+      expect(assessVerdict(sov, ev, BOUND_ID).binding).toBe("pinned");
+      expect(assessVerdict(sov, ev, BOUND_ID).chainRoot).toBe("id-commitment");
+      expect(assessVerdict(sov, ev, COMMITS).binding).toBe("key-commitment");
+      // The identity-path sovereign for a key the id does not commit to, with no
+      // binding from the page's own check (e.g. a file-named guardian link).
+      expect(assessVerdict(sov, ev, NONE).binding).toBe("integrity-only");
+      const notBound: BindingEvidence = {
+        keyCommitsToId: false,
+        servedChain: { kind: "recovery_unverifiable" },
+      };
+      const r = assessVerdict(sov, ev, notBound);
+      expect(r.binding).toBe("integrity-only");
+      expect(r.chainCheck).toBe("recovery_unverifiable");
     }
   });
 
-  it("nested sovereign delegations are key commitments too", () => {
-    const d = assessVerdict(v({ delegations: [v({ binding: "sovereign" })] }));
-    expect(d.delegations?.[0]?.binding).toBe("key-commitment");
+  it("the verifier's pinned stands only when the page's chain check binds too", () => {
+    expect(assessVerdict(v({ binding: "pinned" }), undefined, BOUND_RELAY).binding).toBe("pinned");
+    for (const kind of ["recovery_unverifiable", "root_mismatch", "not_active"] as const) {
+      const r = assessVerdict(v({ binding: "pinned" }), undefined, {
+        keyCommitsToId: false,
+        servedChain: { kind },
+      });
+      expect(r.binding).toBe("integrity-only");
+      expect(r.chainCheck).toBe(kind);
+    }
+    // A page check that binds never lifts a verifier verdict below the bound rungs.
+    expect(assessVerdict(v({}), undefined, BOUND_ID).binding).toBe("integrity-only");
+  });
+
+  it("a key commitment with a served chain that does not bind carries the reason", () => {
+    const r = assessVerdict(v({ binding: "sovereign" }), PROXY_COMPLETE, {
+      keyCommitsToId: true,
+      servedChain: { kind: "not_active" },
+    });
+    expect(r.binding).toBe("key-commitment");
+    expect(r.chainCheck).toBe("not_active");
+  });
+
+  it("nested receipts get no binding evidence", () => {
+    const d = assessVerdict(v({ delegations: [v({ binding: "sovereign" })] }), undefined, COMMITS);
+    expect(d.delegations?.[0]?.binding).toBe("integrity-only");
   });
 
   it("anchored stands only on independent evidence; otherwise pinned + proxy flag", () => {
-    const a = assessVerdict(v({ binding: "anchored", anchorTxHash: "TX" }), INDEPENDENT_COMPLETE);
+    const a = assessVerdict(
+      v({ binding: "anchored", anchorTxHash: "TX" }),
+      INDEPENDENT_COMPLETE,
+      BOUND_RELAY,
+    );
     expect(a.binding).toBe("anchored");
     expect(a.anchorTxHash).toBe("TX");
     for (const ev of [undefined, PROXY_COMPLETE]) {
-      const p = assessVerdict(v({ binding: "anchored", anchorTxHash: "TX" }), ev);
+      const p = assessVerdict(v({ binding: "anchored", anchorTxHash: "TX" }), ev, BOUND_RELAY);
       expect(p.binding).toBe("pinned");
       expect(p.anchorViaProxy).toBe(true);
       expect(p.anchorTxHash).toBeUndefined();
     }
+    expect(
+      assessVerdict(v({ binding: "anchored" }), INDEPENDENT_COMPLETE, {
+        keyCommitsToId: false,
+        servedChain: { kind: "recovery_unverifiable" },
+      }).binding,
+    ).toBe("integrity-only");
   });
 
   it("revocation ✓ only on a complete independent scan", () => {
     for (const r of ["not_revoked", "revoked_after_signing"] as const) {
-      expect(assessVerdict(v({ revocation: r }), INDEPENDENT_COMPLETE).revocation).toBe(r);
-      const trunc = assessVerdict(v({ revocation: r }), INDEPENDENT_TRUNCATED);
+      expect(assessVerdict(v({ revocation: r }), INDEPENDENT_COMPLETE, NONE).revocation).toBe(r);
+      const trunc = assessVerdict(v({ revocation: r }), INDEPENDENT_TRUNCATED, NONE);
       expect(trunc.revocation).toBe("not_established");
       expect(trunc.revocationNote).toContain("200-signature page limit");
-      const proxy = assessVerdict(v({ revocation: r }), PROXY_COMPLETE);
+      const proxy = assessVerdict(v({ revocation: r }), PROXY_COMPLETE, NONE);
       expect(proxy.revocation).toBe("not_established");
       expect(proxy.revocationNote).toContain(PROXY_LABEL);
-      expect(assessVerdict(v({ revocation: r })).revocation).toBe("not_established");
+      expect(assessVerdict(v({ revocation: r }), undefined, NONE).revocation).toBe(
+        "not_established",
+      );
     }
     const failed = assessVerdict(
       v({ revocation: "unknown", revocationDetail: "HTTP 503" }),
       INDEPENDENT_COMPLETE,
+      NONE,
     );
     expect(failed.revocation).toBe("not_established");
     expect(failed.revocationNote).toContain("HTTP 503");
   });
 
-  it("a found revocation stays REVOKED from any source, labelled by source", () => {
+  it("a found revocation stays revoked (reported) from any source, labelled by source", () => {
     const r = assessVerdict(
       v({ binding: "revoked", revocation: "revoked", revokedAt: 5 }),
       PROXY_COMPLETE,
+      BOUND_ID,
     );
     expect(r.binding).toBe("revoked");
     expect(r.revocation).toBe("revoked");
     expect(r.chainSource).toBe("operator-proxy");
+    expect(sourceLabel(r.chainSource)).toBe(PROXY_LABEL);
+    expect(sourceLabel("independent")).toBe("through an RPC the operator does not run");
+    expect(sourceLabel(undefined)).toBe("from an unrecorded source");
   });
 
   it("offline views pass through without chain fields", () => {
-    const o = assessVerdict(v({ motebitId: "m", taskId: "t", signerDid: "did:key:z" }));
+    const o = assessVerdict(
+      v({ motebitId: "m", taskId: "t", signerDid: "did:key:z" }),
+      undefined,
+      NONE,
+    );
     expect(o).toEqual({
       integrity: true,
       binding: "integrity-only",
