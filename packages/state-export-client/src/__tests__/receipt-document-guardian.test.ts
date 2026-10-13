@@ -348,4 +348,33 @@ describe("verifyReceiptDocument — legitimate chains (consumer-level regression
     expect(fileOnly.binding).toBe("integrity-only");
     expect(fileOnly.delegations?.[0]?.integrity).toBe(true);
   });
+
+  it("prefix key (genesis→k1 ordinary→k3 recovery): a k1 receipt before the recovery is integrity-only without the trusted guardian", async () => {
+    const chain = [
+      await ordinaryLink(genesis, mid, T1),
+      await recoveryLink(mid.publicKey, recovered, guardian, T2),
+    ];
+    const file = identityFile(sid, bytesToHex(recovered.publicKey), chain, gHex);
+    const k1Receipt = JSON.stringify(await receiptBy(mid, sid, T1 + DAY));
+    expect(
+      (await verifyReceiptDocument(k1Receipt, { identity: file, trustedGuardianPublicKey: gHex }))
+        .binding,
+    ).toBe("sovereign");
+    expect((await verifyReceiptDocument(k1Receipt, { identity: file })).binding).toBe(
+      "integrity-only",
+    );
+  });
+
+  it("a null or empty trustedGuardianPublicKey is treated as not supplied", async () => {
+    const chain = [await recoveryLink(genesis.publicKey, recovered, guardian, T1)];
+    const file = identityFile(sid, bytesToHex(recovered.publicKey), chain, gHex);
+    const text = JSON.stringify(await receiptBy(recovered, sid, T1 + DAY));
+    for (const value of [null, ""]) {
+      const v = await verifyReceiptDocument(text, {
+        identity: file,
+        trustedGuardianPublicKey: value as unknown as string,
+      });
+      expect(v.binding).toBe("integrity-only");
+    }
+  });
 });

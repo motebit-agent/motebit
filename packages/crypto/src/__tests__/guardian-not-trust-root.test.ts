@@ -28,12 +28,15 @@ import {
   verifyMigratingKeyBinding,
   verifyIdentityBindingAnchored,
   identityLogLeaf,
+  canonicalJson,
+  signBySuite,
   type KeyPair,
   type MotebitIdentityFile,
   type SuccessionRecord,
 } from "../index.js";
 
 const DAY = 24 * 60 * 60 * 1000;
+const SUITE = "motebit-jcs-ed25519-hex-v1" as const;
 
 function identityFile(
   motebitId: string,
@@ -264,4 +267,110 @@ describe("legitimate chains through the same primitives", () => {
     expect(r.guardianAuthority).toBe("not_required");
     expect(r.successionIntegrity).toBeUndefined();
   });
+
+  it("null, empty or malformed trusted guardian is NOT supplied: not_established, never caller_trusted", async () => {
+    const link = await signGuardianRecoverySuccession(
+      guardian.privateKey,
+      recovered.privateKey,
+      genesis.publicKey,
+      recovered.publicKey,
+    );
+    const file = identityFile(
+      sid,
+      bytesToHex(recovered.publicKey),
+      [link as unknown as SuccessionRecord],
+      gHex,
+      link.timestamp - DAY,
+    );
+    const kRec = bytesToHex(recovered.publicKey);
+    const at = link.timestamp + 1;
+    const bad: unknown[] = [null, "", "zz".repeat(32), gHex.slice(0, 62), `${gHex}00`, 42];
+    for (const value of bad) {
+      const r = await verifyKeyBindingAtTime(file, kRec, at, value as string);
+      expect(r.bound).toBe(false);
+      expect(r.guardianAuthority).toBe("not_established");
+      expect(await verifyMigratingKeyBinding(sid, kRec, file, value as string)).toBe(false);
+    }
+  });
+
+  it("prefix keys of a recovered chain (genesis→k1 ordinary→k3 recovery) do not bind without a trusted guardian", async () => {
+    const T0 = Date.parse("2026-01-01T00:00:00Z");
+    const T1 = Date.parse("2026-02-01T00:00:00Z");
+    const T2 = Date.parse("2026-03-01T00:00:00Z");
+    const k1 = rotated;
+    const k3 = recovered;
+    const file = identityFile(
+      sid,
+      bytesToHex(k3.publicKey),
+      [await ordinaryLinkAt(genesis, k1, T1), await recoveryLinkAt(k1, k3, guardian, T2)],
+      gHex,
+      T0,
+    );
+    const k1Hex = bytesToHex(k1.publicKey);
+    const kGen = bytesToHex(genesis.publicKey);
+
+    // With the caller-trusted guardian: k1 binds (sovereign) inside its window.
+    const trusted = await verifyKeyBindingAtTime(file, k1Hex, T1 + DAY, gHex);
+    expect(trusted.bound).toBe(true);
+    expect(trusted.sovereign).toBe(true);
+
+    // Without it: k1 BEFORE the recovery no longer binds (was bound+sovereign
+    // through the file's guardian), and neither does the genesis key.
+    const k1FileOnly = await verifyKeyBindingAtTime(file, k1Hex, T1 + DAY);
+    expect(k1FileOnly.bound).toBe(false);
+    expect(k1FileOnly.guardianAuthority).toBe("not_established");
+    expect(k1FileOnly.successionIntegrity).toBe(true);
+    expect((await verifyKeyBindingAtTime(file, kGen, T0 + DAY)).bound).toBe(false);
+  });
 });
+
+async function ordinaryLinkAt(
+  oldKp: KeyPair,
+  newKp: KeyPair,
+  timestamp: number,
+): Promise<SuccessionRecord> {
+  const old_public_key = bytesToHex(oldKp.publicKey);
+  const new_public_key = bytesToHex(newKp.publicKey);
+  const msg = new TextEncoder().encode(
+    canonicalJson({ old_public_key, new_public_key, timestamp, suite: SUITE }),
+  );
+  return {
+    old_public_key,
+    new_public_key,
+    timestamp,
+    suite: SUITE,
+    old_key_signature: bytesToHex(await signBySuite(SUITE, msg, oldKp.privateKey)),
+    new_key_signature: bytesToHex(await signBySuite(SUITE, msg, newKp.privateKey)),
+  };
+}
+
+async function recoveryLinkAt(
+  oldKp: KeyPair,
+  newKp: KeyPair,
+  guardianKp: KeyPair,
+  timestamp: number,
+): Promise<SuccessionRecord> {
+  const old_public_key = bytesToHex(oldKp.publicKey);
+  const new_public_key = bytesToHex(newKp.publicKey);
+  const reason = "guardian_recovery";
+  const msg = new TextEncoder().encode(
+    canonicalJson({
+      old_public_key,
+      new_public_key,
+      timestamp,
+      suite: SUITE,
+      reason,
+      recovery: true,
+    }),
+  );
+  return {
+    old_public_key,
+    new_public_key,
+    timestamp,
+    suite: SUITE,
+    reason,
+    recovery: true,
+    new_key_signature: bytesToHex(await signBySuite(SUITE, msg, newKp.privateKey)),
+    guardian_signature: bytesToHex(await signBySuite(SUITE, msg, guardianKp.privateKey)),
+  };
+}
