@@ -1235,7 +1235,9 @@ export interface KeyBindingResult {
   /**
    * Property 3: where the guardian key a recovery link is verified against
    * came from. `"not_required"` — no recovery link in the chain;
-   * `"caller_trusted"` — the caller passed it (the caller's trust decision);
+   * `"caller_trusted"` — the caller passed it (the caller's trust decision;
+   * it says where the guardian came from, not that the link verified — read
+   * it together with `successionIntegrity`);
    * `"not_established"` — a recovery link is present and the only guardian is
    * the one the presented file names, so the chain does not bind.
    */
