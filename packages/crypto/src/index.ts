@@ -1476,14 +1476,21 @@ export async function verifyKeyBindingAtTime(
 }
 
 /**
- * Does `presentedKeyHex` legitimately control `motebitId` *right now*? The
- * offline, operator-free binding check a destination relay runs before
- * onboarding a migrating agent (spec/migration-v1.md §8.2 step 6). Two tiers,
- * fail-closed (returns false, never throws, on any unmet condition):
+ * Is `presentedKeyHex` a key the identity's own lineage binds to `motebitId`?
+ * The offline, operator-free binding check a destination relay runs before
+ * onboarding a migrating agent (spec/migration-v1.md §8.2 step 6). Two tiers;
+ * returns false, never throws, on malformed input.
+ *
+ * **Binding, not current authority.** Tier 1 runs first and ignores any
+ * rotation, so a retired genesis key still returns true; the function never
+ * proves possession of the private key. Before an authorization decision,
+ * verify the identity's current key state from an authenticated, sufficiently
+ * fresh source (succession and revocation included) and require proof of
+ * possession; if current authority cannot be established, refuse.
  *
  *  1. **Sovereign genesis** — `motebitId` is the sovereign commitment to
- *     `presentedKeyHex` itself (a never-rotated identity). No identity file
- *     needed; this is {@link verifySovereignBinding}.
+ *     `presentedKeyHex` itself, whether or not the identity has since rotated.
+ *     No identity file needed; this is {@link verifySovereignBinding}.
  *  2. **Sovereign-rooted succession** — with an `identityFile`, `presentedKeyHex`
  *     is the key active *now* in a verified succession chain
  *     ({@link verifyKeyBindingAtTime}) whose genesis is the sovereign commitment
